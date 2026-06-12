@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
+    <meta name="description" content="Mobile text editor and file browser">
+    <meta name="theme-color" content="#09090b">
+    <title>MODiE</title>
+    <script src="/static/js/lucide.min.js"></script>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="manifest" href="/static/manifest.json">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="logo">
+                <button class="icon-btn" id="btnBack" title="Back to files" style="display: none;"><i data-lucide="arrow-left"></i></button>
+                <div class="logo-icon" id="logoIcon"><i data-lucide="file-text"></i></div>
+                <div class="logo-text">
+                    <h1 id="headerTitle">MODiE</h1>
+                    <span class="subtitle" id="headerSubtitle">Browser</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="status-dot" id="statusDot" title="Status"></div>
+                <button class="icon-btn" id="btnSettings" title="Settings"><i data-lucide="settings"></i></button>
+                <button class="icon-btn" id="btnFind" title="Find" style="display: none;"><i data-lucide="search"></i></button>
+                <button class="icon-btn" id="btnOutline" title="Table of Contents" style="display: none;"><i data-lucide="list"></i></button>
+                <button class="btn btn-primary btn-sm" id="btnSave" style="display: none;"><i data-lucide="save"></i> <span class="btn-text">Save</span></button>
+            </div>
+        </header>
+        <div class="find-bar" id="findBar">
+            <div class="find-row">
+                <div class="find-input-container">
+                    <input type="search" id="findInput" placeholder="Find..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" />
+                    <div class="find-modifiers">
+                        <button class="mod-btn" id="btnFindCase" title="Match Case (Aa)">Aa</button>
+                        <button class="mod-btn" id="btnFindWord" title="Match Whole Word (W)">W</button>
+                        <button class="mod-btn" id="btnFindRegex" title="Use Regular Expression (.*)">.*</button>
+                    </div>
+                </div>
+                <span class="find-count" id="findCount"></span>
+                <button class="icon-btn" id="btnFindPrev"><i data-lucide="chevron-up"></i></button>
+                <button class="icon-btn" id="btnFindNext"><i data-lucide="chevron-down"></i></button>
+                <button class="icon-btn" id="btnFindClose"><i data-lucide="x"></i></button>
+            </div>
+            <div class="replace-row">
+                <input type="search" id="replaceInput" placeholder="Replace with..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" />
+                <button class="btn btn-sm btn-ghost" id="btnReplace" title="Replace current selection">Replace</button>
+                <button class="btn btn-sm btn-ghost" id="btnReplaceAll" title="Replace all occurrences">Replace All</button>
+            </div>
+        </div>
+        <div class="tab-bar" role="tablist" style="display: none;">
+            <button class="tab active" data-panel="edit" role="tab" aria-selected="true"><i data-lucide="pencil"></i> Edit</button>
+            <button class="tab" data-panel="preview" role="tab" aria-selected="false"><i data-lucide="eye"></i> Preview</button>
+            <button class="tab" data-panel="backups" role="tab" aria-selected="false"><i data-lucide="history"></i> Backups</button>
+            <button class="tab" data-panel="git" role="tab" aria-selected="false"><i data-lucide="git-branch"></i> Git</button>
+        </div>
+        <div class="file-tabs" id="fileTabs" style="display: none;"></div>
+        <div class="editor-container">
+            <div class="panel active" id="panelBrowser">
+                <div class="browser-path-bar">
+                    <button class="icon-btn" id="btnBrowserHome" title="Home"><i data-lucide="home"></i></button>
+                    <div class="breadcrumbs" id="browserBreadcrumbs"></div>
+                    <div class="browser-actions" style="display: flex; gap: 4px; position: relative;">
+                        <button class="icon-btn" id="btnNewFile" title="New File"><i data-lucide="file-plus"></i></button>
+                        <button class="icon-btn" id="btnBrowserMore" title="More Actions"><i data-lucide="more-vertical"></i></button>
+                        <div class="more-menu-dropdown" id="browserMoreDropdown" style="display: none;">
+                            <button class="menu-item" id="btnBrowserGit"><i data-lucide="git-branch"></i> Git Status</button>
+                            <button class="menu-item" id="btnBrowserFilterToggle"><i data-lucide="filter"></i> Filter Files</button>
+                            <button class="menu-item" id="btnGlobalSearchToggle"><i data-lucide="search"></i> Search in Files</button>
+                            <button class="menu-item" id="btnNewFolder"><i data-lucide="folder-plus"></i> New Folder</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="browser-search-bar" id="browserSearchBar">
+                    <div style="display: flex; gap: 6px; align-items: center; width: 100%;">
+                        <div class="search-input-wrapper">
+                            <div class="search-input-icon"><i data-lucide="search"></i></div>
+                            <input type="search" id="globalSearchInput" class="browser-search" placeholder="Search in files..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" />
+                        </div>
+                        <button class="icon-btn" id="btnBrowserSearchClear" title="Clear search"><i data-lucide="x"></i></button>
+                    </div>
+                    <div style="display: flex; gap: 6px; margin-top: 4px; align-items: center; width: 100%;">
+                        <div class="search-input-wrapper">
+                            <div class="search-input-icon"><i data-lucide="replace"></i></div>
+                            <input type="search" id="globalReplaceInput" class="browser-search" placeholder="Replace with..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" />
+                        </div>
+                        <button class="btn btn-primary btn-sm" id="btnGlobalReplaceAll" title="Replace in all matching files" style="min-height: 36px; padding: 0 10px; font-size: 12px; flex-shrink: 0; justify-content: center;">Replace All</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; margin-top: 4px; padding: 0 4px; align-items: center; width: 100%;">
+                        <button class="mod-btn" id="btnGlobalSearchCase" title="Match Case (Aa)">Aa</button>
+                        <button class="mod-btn" id="btnGlobalSearchRegex" title="Use Regular Expression (.*)">.*</button>
+                        <span id="globalSearchCount" style="font-size: 11px; color: var(--text-muted); margin-left: auto;"></span>
+                    </div>
+                </div>
+                <div class="browser-filter-bar" id="browserFilterBar">
+                    <div class="filter-input-wrapper">
+                        <div class="filter-input-icon"><i data-lucide="search"></i></div>
+                        <input type="search" id="browserFilterInput" class="browser-filter" placeholder="Filter files..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" />
+                    </div>
+                    <button class="icon-btn" id="btnBrowserFilterClear" title="Clear filter"><i data-lucide="x"></i></button>
+                </div>
+                <div class="browser-list" id="browserList">
+                    <div class="loading-screen">
+                        <div class="spinner"></div>
+                        <span style="font-size: 12px; color: var(--text-muted);">Loading files...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="panel" id="panelEdit">
+                <div class="editor-wrapper">
+                    <div class="line-numbers" id="lineNumbers" aria-hidden="true"></div>
+                    <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" enterkeyhint="enter"></textarea>
+                </div>
+            </div>
+            <div class="panel" id="panelPreview">
+                <div id="preview" class="markdown-body"></div>
+            </div>
+            <div class="panel" id="panelBackups">
+                <div class="backup-list" id="backupList">
+                    <div class="loading-screen">
+                        <div class="spinner"></div>
+                        <span style="font-size: 12px; color: var(--text-muted);">Loading backups...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="panel" id="panelGit">
+                <div class="loading-screen">
+                    <div class="spinner"></div>
+                    <span style="font-size: 12px; color: var(--text-muted);">Loading Git repository...</span>
+                </div>
+            </div>
+        </div>
+        <div class="format-toolbar" id="formatToolbar" style="display: none;">
+            <button class="fmt-btn" id="btnUndo" title="Undo"><i data-lucide="undo" style="width: 12px; height: 12px;"></i></button>
+            <button class="fmt-btn" id="btnRedo" title="Redo"><i data-lucide="redo" style="width: 12px; height: 12px;"></i></button>
+            <button class="fmt-btn" data-insert="# ">H1</button>
+            <button class="fmt-btn" data-insert="## ">H2</button>
+            <button class="fmt-btn" data-insert="### ">H3</button>
+            <button class="fmt-btn" data-insert="**" data-wrap="true">B</button>
+            <button class="fmt-btn" data-insert="*" data-wrap="true">I</button>
+            <button class="fmt-btn" data-insert="`" data-wrap="true">`</button>
+            <button class="fmt-btn" data-insert="```\n" data-suffix="\n```">```</button>
+            <button class="fmt-btn" data-insert="- ">-</button>
+            <button class="fmt-btn" data-insert="1. ">1.</button>
+            <button class="fmt-btn" data-insert="---\n">---</button>
+            <button class="fmt-btn" data-insert="| Col | Col |\n|---|---|\n| | |\n">Table</button>
+            <button class="fmt-btn" data-insert="> ">></button>
+            <button class="fmt-btn" data-insert="[text](url)">Link</button>
+            <button class="fmt-btn fmt-save" id="btnToolbarSave" title="Save"><i data-lucide="save" style="width: 12px; height: 12px;"></i></button>
+        </div>
+        <div class="status-bar">
+            <div class="left">
+                <span id="statusText">Loading...</span>
+            </div>
+            <div class="right">
+                <span id="cursorPos">Ln 1, Col 1</span>
+                <span id="wordCount">0 words</span>
+            </div>
+        </div>
+        <div class="toast-container" id="toastContainer"></div>
+    </div>
+    <div class="outline-drawer" id="outlineDrawer">
+        <div class="outline-header">
+            <h3>Table of Contents</h3>
+            <button class="icon-btn" id="btnOutlineClose" title="Close"><i data-lucide="x"></i></button>
+        </div>
+        <div class="outline-content" id="outlineContent"></div>
+    </div>
+    <div class="settings-drawer" id="settingsDrawer">
+        <div class="settings-header">
+            <h3>Settings</h3>
+            <button class="icon-btn" id="btnSettingsClose" title="Close"><i data-lucide="x"></i></button>
+        </div>
+        <div class="settings-content">
+            <div class="settings-group">
+                <span class="settings-label">Theme Mode</span>
+                <div class="segmented-control">
+                    <button class="segment-btn" id="btnSettingThemeDark">Dark</button>
+                    <button class="segment-btn" id="btnSettingThemeLight">Light</button>
+                </div>
+            </div>
+            <div class="settings-group">
+                <span class="settings-label">Editor Font Size</span>
+                <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                    <input type="range" id="settingZoomRange" min="12" max="28" step="2" value="14" style="flex: 1;">
+                    <span id="settingZoomVal" style="font-size: 13px; font-weight: 600; min-width: 20px; text-align: right;">14</span>
+                </div>
+            </div>
+            <div class="settings-group">
+                <span class="settings-label">Editor Options</span>
+                <div class="settings-row">
+                    <span class="settings-control">Word Wrap</span>
+                    <label class="switch-toggle">
+                        <input type="checkbox" id="settingToggleWordWrap">
+                        <span class="slider-toggle"></span>
+                    </label>
+                </div>
+            </div>
+            <div class="settings-group">
+                <span class="settings-label">File Browser Defaults</span>
+                <div class="settings-row">
+                    <span class="settings-control">Show Hidden Files</span>
+                    <label class="switch-toggle">
+                        <input type="checkbox" id="settingToggleHidden">
+                        <span class="slider-toggle"></span>
+                    </label>
+                </div>
+                <div class="settings-row" style="margin-top: 6px;">
+                    <span class="settings-control">Show All File Types</span>
+                    <label class="switch-toggle">
+                        <input type="checkbox" id="settingToggleAllFiles">
+                        <span class="slider-toggle"></span>
+                    </label>
+                </div>
+                <div class="settings-row" style="margin-top: 8px; flex-direction: column; align-items: flex-start; gap: 4px;">
+                    <span class="settings-control">Search Ignored Directories</span>
+                    <input type="text" id="settingSearchIgnored" class="input-field" style="width: 100%; font-size: 12px; min-height: 36px;" placeholder="node_modules, venv, ..." name="search-ignored-field" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                </div>
+            </div>
+            <div class="settings-group">
+                <span class="settings-label">File Explorer Size</span>
+                <div class="segmented-control">
+                    <button class="segment-btn" id="btnSettingDensityCompact">Compact</button>
+                    <button class="segment-btn" id="btnSettingDensityNormal">Normal</button>
+                    <button class="segment-btn" id="btnSettingDensityLarge">Large</button>
+                </div>
+            </div>
+            <div class="settings-group">
+                <span class="settings-label">Draft Cache Options</span>
+                <div class="settings-row">
+                    <span class="settings-control">Local Draft Delay</span>
+                    <select id="settingAutoSaveSelect" class="settings-select">
+                        <option value="500">500 ms</option>
+                        <option value="1000">1 second</option>
+                        <option value="2000">2 seconds</option>
+                        <option value="0">Disabled</option>
+                    </select>
+                </div>
+            </div>
+            <div class="settings-group">
+                <span class="settings-label">Backup & Storage</span>
+                <div class="settings-row">
+                    <span class="settings-control">Max backups per file</span>
+                    <select id="settingBackupMaxCount" class="settings-select">
+                        <option value="5">5</option>
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                    </select>
+                </div>
+                <div class="settings-row" style="margin-top: 6px;">
+                    <span class="settings-control">Delete backups older than</span>
+                    <select id="settingBackupMaxAge" class="settings-select">
+                        <option value="7">7 days</option>
+                        <option value="14">14 days</option>
+                        <option value="30">30 days</option>
+                        <option value="90">90 days</option>
+                    </select>
+                </div>
+                <div id="backupStorageInfo" style="font-size: 11px; color: var(--text-secondary); margin-top: 8px;">
+                    Backups: calculating...
+                </div>
+                <button class="btn btn-sm" id="btnPurgeAllBackups" style="margin-top: 8px; width: 100%; justify-content: center; background: rgba(239, 68, 68, 0.1); color: var(--destructive); border: 1px solid rgba(239, 68, 68, 0.2);">
+                    Purge All Backups
+                </button>
+            </div>
+            <div class="settings-group" style="margin-top: 10px; gap: 10px;">
+                <span class="settings-label">Cache Actions</span>
+                <button class="btn btn-sm" id="btnSettingClearDraft" style="width: 100%; justify-content: center; background: var(--bg-hover); color: var(--text);">Clear Local Draft</button>
+                <button class="btn btn-sm" id="btnSettingClearAuth" style="width: 100%; justify-content: center; background: rgba(239, 68, 68, 0.1); color: var(--destructive); border: 1px solid rgba(239, 68, 68, 0.2);">Reset Session Token</button>
+            </div>
+
+            <div class="settings-group">
+                <span class="settings-label">Information</span>
+                <button class="btn btn-sm" id="btnShowAbout" style="width: 100%; justify-content: center; background: var(--bg-hover); color: var(--text); display: flex; align-items: center; gap: 6px;">
+                    <i data-lucide="info" style="width: 14px; height: 14px;"></i> About MODiE
+                </button>
+            </div>
+
+            <div class="settings-group" style="margin-top: auto;">
+                <div class="settings-info" style="font-size: 11px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; padding: 10px; background: var(--bg-muted); border-radius: var(--radius-sm); border: 1px solid var(--border);">
+                    <div>Server: <span id="settingServerStatus" style="color: var(--success); font-weight: 600;">Connected</span></div>
+                    <div>Port: 8765</div>
+                    <div id="settingServerInfo">Session: -</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="drawer-overlay" id="drawerOverlay"></div>
+
+    <div class="modal-overlay" id="aboutModal">
+        <div class="modal" style="max-width: 320px; width: 90%; padding: 16px; border-radius: var(--radius-sm);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                <h3 style="margin: 0; font-size: 14px; font-weight: 600; color: var(--text);">About MODiE</h3>
+                <button class="icon-btn" id="btnAboutClose" title="Close"><i data-lucide="x" style="width: 14px; height: 14px;"></i></button>
+            </div>
+            
+            <div style="font-size: 12px; line-height: 1.4; color: var(--text-secondary); display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px;">
+                <p style="margin: 0; font-size: 11.5px; color: var(--text-secondary);">
+                    A compact, mobile-optimized text editor and file browser built to run locally on Android via Termux.
+                </p>
+                
+                <div style="display: flex; flex-direction: column; gap: 6px; padding: 10px; background: var(--bg-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--font-sans);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                        <span style="color: var(--text-muted); font-size: 11px;">Version</span>
+                        <span style="color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: 11px;">1.0.0</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 6px;">
+                        <span style="color: var(--text-muted); font-size: 11px;">Developer</span>
+                        <span style="color: var(--text); font-weight: 500; font-size: 11px;">Jason Jamora (Sxentrie)</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 6px;">
+                        <span style="color: var(--text-muted); font-size: 11px;">Company</span>
+                        <span style="color: var(--text); font-weight: 500; font-size: 11px;">Sxentrie IT Solutions</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal-actions" style="margin-top: 12px;">
+                <button class="btn btn-primary btn-sm" id="btnAboutConfirm" style="justify-content: center; width: 100%; font-size: 12px; height: 28px; padding: 0 12px;">Close</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="previewBackupModal">
+        <div class="modal" style="max-width: 600px; width: 90%; height: 80vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <h3 id="previewBackupTitle" style="margin: 0;">Preview Backup</h3>
+                <button class="btn btn-sm" id="btnToggleBackupFormat" style="min-height: 32px; padding: 0 10px; font-size: 12px;">Show Raw</button>
+            </div>
+            <div id="previewBackupContent" class="preview-backup-content markdown-body rendered-mode" style="flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); margin: 12px 0;"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnPreviewBackupClose" style="justify-content: center;">Close</button>
+                <button class="btn btn-primary" id="btnPreviewBackupRestore" style="justify-content: center;">Restore this backup</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="externalChangeModal">
+        <div class="modal" style="max-width: 700px; width: 95%; height: 80vh; display: flex; flex-direction: column;">
+            <h3>External Changes Detected</h3>
+            <p id="externalChangeDiffText" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;"></p>
+            <div class="diff-split-container">
+                <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+                    <span style="font-size: 11px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted);">Current Editor version</span>
+                    <div id="externalChangeCurrent" style="flex: 1; overflow-y: auto; overscroll-behavior: contain; background: #000; color: #a3a3a3; font-family: var(--font-mono); font-size: 11px; padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); white-space: pre-wrap; word-break: break-all;"></div>
+                </div>
+                <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+                    <span style="font-size: 11px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted);">Incoming Server version</span>
+                    <div id="externalChangeIncoming" style="flex: 1; overflow-y: auto; overscroll-behavior: contain; background: #000; color: #a3a3a3; font-family: var(--font-mono); font-size: 11px; padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); white-space: pre-wrap; word-break: break-all;"></div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnExternalChangeKeep" style="justify-content: center;">Keep My Edits</button>
+                <button class="btn btn-primary" id="btnExternalChangeAccept" style="justify-content: center;">Accept Server Version</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="restoreModal">
+        <div class="modal">
+            <h3>Restore backup</h3>
+            <p id="restoreModalText">This will replace the current file with this backup. A pre-restore backup will be created automatically.</p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnRestoreCancel">Cancel</button>
+                <button class="btn btn-destructive" id="btnRestoreConfirm">Restore</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="diffModal">
+        <div class="modal" style="max-width: 600px; width: 90%;">
+            <h3>Compare Changes</h3>
+            <p>A conflict was detected. Green represents additions in your local buffer, red represents deletions relative to the server version.</p>
+            <div id="diffViewContainer" style="max-height: 300px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); padding: 8px; font-family: var(--font-mono); font-size: 12px; border-radius: var(--radius-sm); margin: 8px 0; background: var(--bg-card); white-space: pre-wrap;"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnDiffCancel">Cancel</button>
+                <button class="btn btn-destructive" id="btnDiffAcceptLocal">Use My Local Edits</button>
+                <button class="btn btn-primary" id="btnDiffAcceptServer">Use Server Version</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="draftModal">
+        <div class="modal">
+            <h3>Unsaved local draft found</h3>
+            <p>We found a local draft with changes that differ from the server. Would you like to restore this draft or discard it to load the server version?</p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnDraftDiscard">Discard draft</button>
+                <button class="btn btn-primary" id="btnDraftRestore">Restore draft</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="genericConfirmModal">
+        <div class="modal">
+            <h3 id="genericConfirmTitle">Confirm</h3>
+            <p id="genericConfirmText"></p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnGenericConfirmCancel">Cancel</button>
+                <button class="btn btn-primary" id="btnGenericConfirmConfirm">OK</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="genericPromptModal">
+        <div class="modal">
+            <h3 id="genericPromptTitle">Input</h3>
+            <p id="genericPromptText" style="margin-bottom: 8px;"></p>
+            <input type="text" id="genericPromptInput" class="input-field" name="generic-prompt-field" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" enterkeyhint="done" />
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="btnGenericPromptCancel">Cancel</button>
+                <button class="btn btn-primary" id="btnGenericPromptConfirm">OK</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="authModal">
+        <div class="modal">
+            <h3>Security token required</h3>
+            <p>Enter the security token printed in your terminal console to authorize this app.</p>
+            <input type="text" id="authTokenInput" class="input-field" name="auth-token-field" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" enterkeyhint="go">
+            <div class="modal-actions">
+                <button class="btn btn-primary" id="btnAuthSubmit">Authorize</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="contextMenuModal">
+        <div class="modal context-modal">
+            <h3 id="contextMenuTitle">Item Actions</h3>
+            <div class="context-menu-options">
+                <button class="context-option-btn" id="btnContextRename"><i data-lucide="edit-3"></i> Rename</button>
+                <button class="context-option-btn" id="btnContextMove"><i data-lucide="folder-output"></i> Move</button>
+                <button class="context-option-btn" id="btnContextCopyPath"><i data-lucide="copy"></i> Copy Path</button>
+                <button class="context-option-btn btn-danger" id="btnContextDelete"><i data-lucide="trash-2"></i> Delete</button>
+            </div>
+            <div class="modal-actions" style="margin-top: 16px;">
+                <button class="btn btn-ghost" style="width: 100%; justify-content: center;" id="btnContextCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

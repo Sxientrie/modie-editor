@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+modie-editor.zip
+.env
+*.tmp
+.DS_Store
+node_modules/
+.vscode/
+.idea/

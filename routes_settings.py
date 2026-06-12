@@ -1,0 +1,153 @@
+import json
+import os
+import re
+from pathlib import Path
+import config
+from routes_common import get_route, post_route, validate_json, validate_query
+from file_ops import atomic_write
+
+class SettingsRoutesMixin:
+
+    @get_route("/api/settings")
+    def _api_get_settings(self):
+        with config.SETTINGS_LOCK:
+            if config.SETTINGS_FILE.exists():
+                try:
+                    data = json.loads(config.SETTINGS_FILE.read_text("utf-8"))
+                except Exception:
+                    data = {}
+            else:
+                data = {}
+        defaults = {
+            "theme": "dark",
+            "zoom": 14,
+            "show_hidden": False,
+            "show_all": False,
+            "auto_save_delay": 500,
+            "word_wrap": True,
+            "browser_density": "normal",
+            "ignored_dirs": "node_modules, venv, .venv, __pycache__, dist, build, target",
+            "backup_max_count": 10,
+            "backup_max_age_days": 30
+        }
+        for k, v in defaults.items():
+            if k not in data:
+                data[k] = v
+        self._send_json(data)
+
+    @post_route("/api/settings")
+    @validate_json()
+    def _api_save_settings(self):
+        data = self.request_data
+        allowed = {
+            "theme": lambda v: v in ("dark", "light"),
+            "zoom": lambda v: isinstance(v, int) and 10 <= v <= 28,
+            "show_hidden": lambda v: isinstance(v, bool),
+            "show_all": lambda v: isinstance(v, bool),
+            "auto_save_delay": lambda v: isinstance(v, int) and v >= 0,
+            "word_wrap": lambda v: isinstance(v, bool),
+            "browser_density": lambda v: v in ("compact", "normal", "large"),
+            "ignored_dirs": lambda v: isinstance(v, str) and len(v) < 500,
+            "backup_max_count": lambda v: isinstance(v, int) and 1 <= v <= 100,
+            "backup_max_age_days": lambda v: isinstance(v, int) and 1 <= v <= 365
+        }
+        validated = {k: v for k, v in data.items() if k in allowed and allowed[k](v)}
+        with config.SETTINGS_LOCK:
+            try:
+                atomic_write(config.SETTINGS_FILE, json.dumps(validated))
+            except Exception as e:
+                self._send_json({"error": f"Failed to save settings: {e}"}, 500)
+                return
+        self._send_json({"ok": True})
+
+    @get_route("/api/search")
+    @validate_query(["query", "path"])
+    def _api_search_files(self):
+        query = self.query_params["query"]
+        path_str = self.query_params["path"]
+        case_sensitive = self.query_params.get("case_sensitive", "false").lower() == "true"
+        is_regex = self.query_params.get("regex", "false").lower() == "true"
+        if not query:
+            self._send_json({"results": []})
+            return
+        try:
+            dir_path = self._resolve_and_validate(path_str)
+        except PermissionError as e:
+            self._send_json({"error": str(e)}, 403)
+            return
+        if not dir_path.exists() or not dir_path.is_dir():
+            self._send_json({"error": "Directory not found"}, 404)
+            return
+        if is_regex:
+            try:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                pattern = re.compile(query, flags)
+            except Exception as e:
+                self._send_json({"error": f"Invalid regex: {e}"}, 400)
+                return
+        else:
+            if not case_sensitive:
+                query_clean = query.lower()
+            else:
+                query_clean = query
+        with config.SETTINGS_LOCK:
+            if config.SETTINGS_FILE.exists():
+                try:
+                    settings_data = json.loads(config.SETTINGS_FILE.read_text("utf-8"))
+                except Exception:
+                    settings_data = {}
+            else:
+                settings_data = {}
+        ignored_dirs_str = settings_data.get("ignored_dirs", "node_modules, venv, .venv, __pycache__, dist, build, target")
+        ignored_dirs = [d.strip() for d in ignored_dirs_str.split(",") if d.strip()]
+        results = []
+        sandbox_root = Path.home().resolve()
+        shared_root = Path("/storage/emulated/0").resolve()
+        limit = 200
+        count = 0
+        for root, dirs, files in os.walk(dir_path):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != ".modie" and d not in ignored_dirs]
+            for file in files:
+                if file.startswith(".") or file.endswith(".tmp"):
+                    continue
+                ext = Path(file).suffix.lower()
+                if ext not in (".md", ".txt", ".js", ".css", ".html", ".json"):
+                    continue
+                file_path = Path(root) / file
+                try:
+                    stat = file_path.stat()
+                    if stat.st_size > 1 * 1024 * 1024:
+                        continue
+                    content = file_path.read_text("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                lines = content.splitlines()
+                for idx, line in enumerate(lines):
+                    matched = False
+                    matched = bool(pattern.search(line)) if is_regex else (query_clean in (line if case_sensitive else line.lower()))
+                    if matched:
+                        rel_path = None
+                        try:
+                            rel = file_path.relative_to(sandbox_root)
+                            rel_path = "termux_home/" + str(rel) if str(rel) != "." else "termux_home"
+                        except ValueError:
+                            try:
+                                rel = file_path.relative_to(shared_root)
+                                rel_path = "storage_shared/" + str(rel) if str(rel) != "." else "storage_shared"
+                            except ValueError:
+                                pass
+                        if rel_path:
+                            results.append({
+                                "path": rel_path,
+                                "filename": file,
+                                "line": idx + 1,
+                                "text": line.strip()[:100]
+                            })
+                            count += 1
+                            if count >= limit:
+                                break
+                if count >= limit:
+                    break
+            if count >= limit:
+                break
+        self._send_json({"results": results})

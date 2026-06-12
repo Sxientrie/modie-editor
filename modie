@@ -1,0 +1,343 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+
+mkdir -p "$HOME/.modie"
+
+
+if [ -t 1 ]; then
+    BOLD="\033[1m"
+    GREEN="\033[32m"
+    RED="\033[31m"
+    YELLOW="\033[33m"
+    BLUE="\033[34m"
+    CYAN="\033[36m"
+    RESET="\033[0m"
+else
+    BOLD=""
+    GREEN=""
+    RED=""
+    YELLOW=""
+    BLUE=""
+    CYAN=""
+    RESET=""
+fi
+
+
+info() {
+    printf "  ${BLUE}%-10s${RESET} %s\n" "info" "$*"
+}
+
+success() {
+    printf "  ${GREEN}%-10s${RESET} %s\n" "success" "$*"
+}
+
+warn() {
+    printf "  ${YELLOW}%-10s${RESET} %s\n" "warning" "$*"
+}
+
+error() {
+    printf "  ${RED}%-10s${RESET} %s\n" "error" "$*" >&2
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+SERVER_SCRIPT=""
+CANDIDATES=(
+    "$SCRIPT_DIR/server.py"
+    "/storage/emulated/0/Termux/modie-editor/server.py"
+    "/storage/emulated/0/Termux/modie/server.py"
+    "$HOME/modie-editor/server.py"
+    "$HOME/modie/server.py"
+)
+
+for candidate in "${CANDIDATES[@]}"; do
+    if [ -f "$candidate" ]; then
+        SERVER_SCRIPT="$candidate"
+        break
+    fi
+done
+
+if [ -z "$SERVER_SCRIPT" ]; then
+    SERVER_SCRIPT="/storage/emulated/0/Termux/modie-editor/server.py"
+fi
+
+PIDFILE="$HOME/.modie/.modie.pid"
+LOGFILE="$HOME/.modie/.modie.log"
+PORT=8765
+TOKEN_FILE="$HOME/.modie/.token"
+
+_get_url() {
+    if [ -f "$TOKEN_FILE" ]; then
+        echo "http://localhost:${PORT}/?token=$(cat "$TOKEN_FILE")"
+    else
+        echo "http://localhost:${PORT}"
+    fi
+}
+
+_is_running() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        return 0
+    fi
+    if (echo -n > /dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+_get_pid() {
+    if [ -f "$PIDFILE" ]; then
+        local pid
+        pid=$(cat "$PIDFILE")
+        if kill -0 "$pid" 2>/dev/null && grep -q "server.py" "/proc/$pid/cmdline" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+    fi
+    pgrep -f "python3.*server.py.*--port $PORT" 2>/dev/null | head -1 || true
+}
+
+_start() {
+    local url
+    url=$(_get_url)
+    if _is_running; then
+        local pid
+        pid=$(_get_pid)
+        info "Server is already running (PID: $pid)"
+        info "Opening $url ..."
+        termux-open-url "$url" 2>/dev/null &
+        return 0
+    fi
+
+    rm -f "$PIDFILE"
+    info "Starting MODiE server on port $PORT..."
+
+    if command -v setsid >/dev/null 2>&1; then
+        setsid python3 "$SERVER_SCRIPT" --port "$PORT" > "$LOGFILE" 2>&1 &
+    else
+        python3 "$SERVER_SCRIPT" --port "$PORT" > "$LOGFILE" 2>&1 &
+    fi
+    local pid=$!
+    echo "$pid" > "$PIDFILE"
+
+    local attempts=0
+    while [ $attempts -lt 20 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        if (echo -n > /dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then
+            break
+        fi
+        sleep 0.2
+        attempts=$((attempts + 1))
+    done
+
+
+    url=$(_get_url)
+
+    if kill -0 "$pid" 2>/dev/null && _is_running; then
+        success "Server successfully started (PID: $pid)"
+        info "Access URL: $url"
+        termux-open-url "$url" 2>/dev/null &
+    else
+        error "Server failed to start (port conflict or crash). Recent logs:"
+        if [ -f "$LOGFILE" ]; then
+            tail -n 10 "$LOGFILE" 2>/dev/null | sed 's/^/  /'
+        else
+            error "No log file found."
+        fi
+        rm -f "$PIDFILE"
+        return 1
+    fi
+}
+
+_stop() {
+    local pid
+    pid=$(_get_pid)
+    if [ -z "$pid" ]; then
+        info "Server is not running."
+        rm -f "$PIDFILE"
+        return 0
+    fi
+
+    info "Stopping server (PID: $pid)..."
+    kill "$pid" 2>/dev/null || true
+
+    local i=0
+    while [ $i -lt 5 ]; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+        i=$((i + 1))
+    done
+
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    success "Server stopped."
+}
+
+_status() {
+    if _is_running; then
+        local pid
+        pid=$(_get_pid)
+        local url
+        url=$(_get_url)
+        printf "${BOLD}MODiE Service Status${RESET}\n"
+        printf "  %-12s : ${GREEN}ACTIVE${RESET}\n" "State"
+        printf "  %-12s : %s\n" "PID" "$pid"
+        printf "  %-12s : %s\n" "Port" "$PORT"
+        printf "  %-12s : %s\n" "URL" "$url"
+    else
+        printf "${BOLD}MODiE Service Status${RESET}\n"
+        printf "  %-12s : ${YELLOW}STOPPED${RESET}\n" "State"
+        rm -f "$PIDFILE"
+    fi
+}
+
+_restart() {
+    _stop
+    sleep 0.5
+    _start
+}
+
+_log() {
+    if [ -f "$LOGFILE" ]; then
+        if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--follow" ]; then
+            exec tail -f "$LOGFILE"
+        else
+            printf "${BOLD}┌────────────────────────────────────────────────────────┐${RESET}\n"
+            printf "${BOLD}│ SERVER LOGS (Last 30 lines)                            │${RESET}\n"
+            printf "${BOLD}└────────────────────────────────────────────────────────┘${RESET}\n"
+            tail -n 30 "$LOGFILE"
+        fi
+    else
+        warn "No log file found at $LOGFILE"
+    fi
+}
+
+_debug() {
+    printf "${BOLD}┌────────────────────────────────────────────────────────┐${RESET}\n"
+    printf "${BOLD}│               MODiE SYSTEM DIAGNOSTICS                 │${RESET}\n"
+    printf "${BOLD}└────────────────────────────────────────────────────────┘${RESET}\n"
+    
+    printf "\n${CYAN}OS Environment${RESET}\n"
+    printf "  %-14s : %s\n" "Shell" "$SHELL"
+    if [ -n "$TERMUX_VERSION" ]; then
+        printf "  %-14s : Yes (%s)\n" "In Termux" "$TERMUX_VERSION"
+    else
+        printf "  %-14s : No\n" "In Termux"
+    fi
+    
+    printf "\n${CYAN}Paths & Configuration${RESET}\n"
+    if [ -f "$SERVER_SCRIPT" ]; then
+        local sz
+        sz=$(du -h "$SERVER_SCRIPT" | cut -f1)
+        printf "  %-14s [ ${GREEN}OK${RESET} ]\n" "Server Script"
+        printf "                 Path: %s (%s)\n" "$SERVER_SCRIPT" "$sz"
+    else
+        printf "  %-14s [ ${RED}FAIL${RESET} ] (Not Found)\n" "Server Script"
+        printf "                 Path: %s\n" "$SERVER_SCRIPT"
+    fi
+    
+    if [ -f "$PIDFILE" ]; then
+        printf "  %-14s [ ${GREEN}OK${RESET} ] (PID: %s)\n" "PID File" "$(cat "$PIDFILE")"
+        printf "                 Path: %s\n" "$PIDFILE"
+    else
+        printf "  %-14s [ ${YELLOW}INFO${RESET} ] (Not Active)\n" "PID File"
+        printf "                 Path: %s\n" "$PIDFILE"
+    fi
+    
+    if [ -f "$TOKEN_FILE" ]; then
+        local tok_hint
+        tok_hint=$(cat "$TOKEN_FILE" | cut -c1-6)
+        printf "  %-14s [ ${GREEN}OK${RESET} ] (Token: %s...)\n" "Token File" "$tok_hint"
+        printf "                 Path: %s\n" "$TOKEN_FILE"
+    else
+        printf "  %-14s [ ${YELLOW}INFO${RESET} ] (Missing)\n" "Token File"
+        printf "                 Path: %s\n" "$TOKEN_FILE"
+    fi
+    
+    if [ -f "$LOGFILE" ]; then
+        local sz
+        sz=$(du -h "$LOGFILE" | cut -f1)
+        printf "  %-14s [ ${GREEN}OK${RESET} ] (%s)\n" "Log File" "$sz"
+        printf "                 Path: %s\n" "$LOGFILE"
+    else
+        printf "  %-14s [ ${YELLOW}INFO${RESET} ] (Missing)\n" "Log File"
+        printf "                 Path: %s\n" "$LOGFILE"
+    fi
+    
+    printf "\n${CYAN}Network Status${RESET}\n"
+    if (echo -n > /dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then
+        printf "  %-14s [ ${GREEN}BOUND${RESET} ]\n" "Port status"
+        local pids
+        pids=$(pgrep -f "python3.*server.py.*--port $PORT" || true)
+        if [ -n "$pids" ]; then
+            printf "  %-14s : Python server running (PID: %s)\n" "Process check" "$pids"
+        else
+            printf "  %-14s : ${RED}Port is bound by another service!${RESET}\n" "Process check"
+        fi
+    else
+        printf "  %-14s [ ${YELLOW}CLOSED${RESET} ]\n" "Port status"
+    fi
+    
+    if _is_running; then
+        printf "\n${CYAN}API Verification${RESET}\n"
+        if [ -f "$TOKEN_FILE" ]; then
+            local test_res
+            test_res=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Editor-Token: $(cat "$TOKEN_FILE")" "http://127.0.0.1:${PORT}/api/browser?path=" || echo "ERROR")
+            if [ "$test_res" = "200" ]; then
+                printf "  %-14s [ ${GREEN}OK${RESET} ] (HTTP 200)\n" "API endpoint"
+            else
+                printf "  %-14s [ ${RED}FAIL${RESET} ] (HTTP %s)\n" "API endpoint" "$test_res"
+            fi
+        else
+            printf "  %-14s [ ${YELLOW}SKIP${RESET} ] (Token file missing)\n" "API endpoint"
+        fi
+    fi
+    printf "──────────────────────────────────────────────────────────\n"
+}
+
+_install() {
+    info "Installing MODiE CLI to system binary directory..."
+    local dest="$PREFIX/bin/modie"
+    if [ -f "$dest" ] && [ "$0" -ef "$dest" ]; then
+        success "CLI is already installed in the system binary directory."
+        return 0
+    fi
+    chmod +x "$0"
+    if cp "$0" "$dest"; then
+        chmod +x "$dest"
+        success "Installation completed. You can now run 'modie' from anywhere."
+    else
+        error "Installation failed. Please verify write permissions to $dest."
+    fi
+}
+
+case "${1:-}" in
+    start)   _start   ;;
+    dev)
+        info "Starting MODiE server in DEVELOPMENT mode..."
+        python3 "$SERVER_SCRIPT" --port "$PORT" --dev
+        ;;
+    stop)    _stop    ;;
+    restart) _restart ;;
+    status)  _status  ;;
+    log)     _log "${2:-}" ;;
+    tail)    _log "-f" ;;
+    debug)   _debug   ;;
+    install) _install ;;
+    *)
+        printf "${BOLD}┌────────────────────────────────────────────────────────┐${RESET}\n"
+        printf "${BOLD}│                  MODiE Text Workspace                  │${RESET}\n"
+        printf "${BOLD}└────────────────────────────────────────────────────────┘${RESET}\n\n"
+        printf "${BOLD}Usage:${RESET} modie <command>\n\n"
+        printf "${BOLD}Commands:${RESET}\n"
+        printf "  %-10s Start server & launch browser\n" "start"
+        printf "  %-10s Start server in dev mode (foreground & hot-reload)\n" "dev"
+        printf "  %-10s Stop background server\n" "stop"
+        printf "  %-10s Restart server\n" "restart"
+        printf "  %-10s Check server status\n" "status"
+        printf "  %-10s View recent logs (-f to follow)\n" "log"
+        printf "  %-10s Tail server logs in real-time\n" "tail"
+        printf "  %-10s Run diagnostics & API check\n" "debug"
+        printf "  %-10s Install globally to system PATH\n" "install"
+        ;;
+esac

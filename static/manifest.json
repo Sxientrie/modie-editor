@@ -1,0 +1,16 @@
+{
+  "name": "MODiE Text Workspace",
+  "short_name": "MODiE",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    {
+      "src": "/static/icon_v1.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

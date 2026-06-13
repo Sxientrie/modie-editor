@@ -131,7 +131,9 @@ export async function loadBackupContent(ctx, name, path) {
 export async function searchFiles(ctx, query, path, caseSensitive, isRegex) {
     try {
         ctx.setStatus('loading', 'Searching...');
-        const data = await apiGet('/api/search', { query, path, case_sensitive: caseSensitive, regex: isRegex }, { ctx });
+        const showHidden = localStorage.getItem('show_hidden') === 'true';
+        const showAll = localStorage.getItem('show_all') === 'true';
+        const data = await apiGet('/api/search', { query, path, case_sensitive: caseSensitive, regex: isRegex, show_hidden: showHidden, show_all: showAll }, { ctx });
         
         const list = document.querySelector('#browserList');
         if (!list) return;

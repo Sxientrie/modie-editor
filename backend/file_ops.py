@@ -30,10 +30,17 @@ def atomic_write(target_path, content, encoding="utf-8"):
 
 def create_backup(file_path, backup_dir, prefix):
     file_path = Path(file_path)
+
+    if not file_path.exists():
+        return None
     backup_dir = Path(backup_dir)
     backup_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"{prefix}_{ts}{file_path.suffix or '.md'}"
     backup_path = backup_dir / backup_name
-    shutil.copy2(file_path, backup_path)
+    try:
+        content = file_path.read_bytes()
+        atomic_write(backup_path, content)
+    except Exception:
+        return None
     return backup_path

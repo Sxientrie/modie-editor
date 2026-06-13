@@ -2,7 +2,6 @@ import { escapeHtml } from './utils.js';
 import { renderMarkdown } from './markdown.js';
 import * as api from './api.js';
 import * as ui from './ui.js';
-import { setupGestures } from './gestures.js';
 import { setupEditor } from './editor.js';
 import { setupContextMenu } from './contextmenu.js';
 import { initWatch, startWatching, stopWatching } from './watch.js';
@@ -14,6 +13,7 @@ import { setupOutline, toggleOutline } from './ui-outline.js';
 import { setupGlobalReplace } from './ui-replace.js';
 import { initOfflineSync } from './indexeddb-sync.js';
 import { initGit } from './git.js';
+import { setupGlobalSearchUI } from './global-search-ui.js';
 
 const getLS = (k) => localStorage.getItem(k) === 'true';
 
@@ -152,79 +152,7 @@ window.addEventListener('beforeunload', (e) => {
     if (state.isDirty) { e.preventDefault(); e.returnValue = ''; }
 });
 
-function runGlobalSearch() {
-    const query = $('#globalSearchInput').value.trim();
-    if (!query) {
-        $('#globalSearchCount').textContent = '';
-        api.loadDirectory(ctx, state.currentPath);
-        return;
-    }
-    api.searchFiles(ctx, query, state.currentPath, state.globalSearchCaseSensitive, state.globalSearchRegex);
-}
 
-$('#btnGlobalSearchToggle').addEventListener('click', () => {
-    const searchBar = $('#browserSearchBar');
-    const toggleBtn = $('#btnGlobalSearchToggle');
-    const filterBar = $('#browserFilterBar');
-    const filterBtn = $('#btnBrowserFilterToggle');
-    
-    if (searchBar) {
-        const isActive = searchBar.classList.toggle('active');
-        toggleBtn.classList.toggle('active', isActive);
-        
-        if (isActive) {
-            if (filterBar) {
-                filterBar.classList.remove('active');
-                filterBtn.classList.remove('active');
-                $('#browserFilterInput').value = '';
-                ui.filterBrowserItems('');
-            }
-            
-            const searchInput = $('#globalSearchInput');
-            searchInput.value = '';
-            $('#globalSearchCount').textContent = '';
-            searchInput.focus();
-        } else {
-            $('#globalSearchInput').value = '';
-            $('#globalSearchCount').textContent = '';
-            api.loadDirectory(ctx, state.currentPath);
-        }
-    }
-});
-
-$('#btnBrowserSearchClear').addEventListener('click', () => {
-    const searchInput = $('#globalSearchInput');
-    if (searchInput) searchInput.value = '';
-    $('#globalSearchCount').textContent = '';
-    
-    const searchBar = $('#browserSearchBar');
-    if (searchBar) searchBar.classList.remove('active');
-    $('#btnGlobalSearchToggle').classList.remove('active');
-    
-    api.loadDirectory(ctx, state.currentPath);
-});
-
-let globalSearchTimeout = null;
-$('#globalSearchInput').addEventListener('input', () => {
-    clearTimeout(globalSearchTimeout);
-    globalSearchTimeout = setTimeout(runGlobalSearch, 300);
-});
-$('#globalSearchInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') $('#btnBrowserSearchClear').click();
-    else if (e.key === 'Enter') { e.preventDefault(); runGlobalSearch(); }
-});
-$('#btnGlobalSearchCase').addEventListener('click', () => {
-    state.globalSearchCaseSensitive = !state.globalSearchCaseSensitive;
-    localStorage.setItem('global_search_case_sensitive', state.globalSearchCaseSensitive);
-    $('#btnGlobalSearchCase').classList.toggle('active', state.globalSearchCaseSensitive);
-    runGlobalSearch();
-});
-$('#btnGlobalSearchRegex').addEventListener('click', () => {
-    state.globalSearchRegex = !state.globalSearchRegex;
-    localStorage.setItem('global_search_regex', state.globalSearchRegex);
-    $('#btnGlobalSearchRegex').classList.toggle('active', state.globalSearchRegex);
-    runGlobalSearch();
-});
 $('#btnNewFile').addEventListener('click', async () => {
     const name = await ctx.showPrompt('New File', 'New file name (e.g. notes.md):');
     if (name) api.createItem(ctx, state.currentPath, name, false).then(() => api.loadDirectory(ctx, state.currentPath));
@@ -282,7 +210,7 @@ if (btnBrowserGit) {
 
 initSettingsModule(ctx, state, closeFile);
 initWatch(ctx, state); initTabs(ctx, state, startWatching, stopWatching, switchTab); initSettings();
-setupBrowser(ctx, state); setupFind(ctx); setupOutline(ctx); setupGlobalReplace(ctx); initOfflineSync(ctx);
+setupBrowser(ctx, state); setupFind(ctx); setupOutline(ctx); setupGlobalReplace(ctx); setupGlobalSearchUI(ctx, state, api); initOfflineSync(ctx);
 initGit(ctx, state);
 ui.setupPreviewCheckboxSync(ctx);
 
@@ -329,7 +257,6 @@ document.addEventListener('contextmenu', e => {
 
 setupEditor(ctx, state, ui, api);
 setupContextMenu(ctx, state, api, ui);
-setupGestures(ctx, state, switchTab);
 
 window.addEventListener('unhandledrejection', (e) => {
     const msg = e.reason && e.reason.message ? e.reason.message.slice(0, 60) : 'Unknown error';

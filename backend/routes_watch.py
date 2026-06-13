@@ -3,8 +3,8 @@ import time
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
-import config
-from routes_common import get_route, validate_query
+from . import config
+from .routes_common import get_route, validate_query
 
 class WatchRoutesMixin:
 
@@ -45,14 +45,15 @@ class WatchRoutesMixin:
                 try:
                     self.wfile.write(f"data: {data_payload}\n\n".encode("utf-8"))
                     self.wfile.flush()
-                except Exception:
+                except (BrokenPipeError, ConnectionResetError, OSError):
+
                     break
                 last_mtime = current_mtime
             elif cycle % heartbeat_interval == 0:
                 try:
                     self.wfile.write(b":\n\n")
                     self.wfile.flush()
-                except Exception:
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     break
 
     @get_route("/api/dev-watch", require_auth=False)
@@ -73,11 +74,12 @@ class WatchRoutesMixin:
                 try:
                     self.wfile.write(b"data: reload\n\n")
                     self.wfile.flush()
-                except Exception:
+                except (BrokenPipeError, ConnectionResetError, OSError):
+
                     break
             elif cycle % 15 == 0:
                 try:
                     self.wfile.write(b":\n\n")
                     self.wfile.flush()
-                except Exception:
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     break

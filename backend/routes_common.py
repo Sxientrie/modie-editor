@@ -1,12 +1,14 @@
 import json
+import sys
 from urllib.parse import urlparse, parse_qs
-
 import importlib
 import inspect
 from pathlib import Path
 
 GET_ROUTES = {}
 POST_ROUTES = {}
+
+_MAX_JSON_BODY = 5 * 1024 * 1024
 
 
 def get_route(path, require_auth=True):
@@ -32,10 +34,14 @@ def post_route(path, require_auth=True):
 def discover_routes():
     mixins = []
     current_dir = Path(__file__).parent
-    for p in current_dir.glob("routes_*.py"):
+    for p in sorted(current_dir.glob("routes_*.py")):
         if p.stem == "routes_common":
             continue
-        mod = importlib.import_module(p.stem)
+        try:
+            mod = importlib.import_module(f"backend.{p.stem}")
+        except Exception as e:
+            print(f"Warning: Failed to import {p.stem}: {e}", file=sys.stderr)
+            continue
         for name, cls in inspect.getmembers(mod, inspect.isclass):
             if cls.__module__ == mod.__name__ and name.endswith("Mixin"):
                 mixins.append(cls)
@@ -48,10 +54,23 @@ def validate_json(required_keys=None):
     def decorator(func):
         def wrapper(self, *args, **kwargs):
             try:
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    length = 0
+                if length > _MAX_JSON_BODY:
+                    self._send_json({"error": "Payload too large"}, 413)
+                    return
                 body = self._read_body()
                 data = json.loads(body) if body else {}
-            except Exception as e:
+            except json.JSONDecodeError as e:
                 self._send_json({"error": f"Invalid JSON body: {e}"}, 400)
+                return
+            except Exception as e:
+                self._send_json({"error": f"Failed to read request body: {e}"}, 400)
+                return
+            if not isinstance(data, dict):
+                self._send_json({"error": "JSON body must be an object"}, 400)
                 return
             for key in required_keys:
                 if key not in data:

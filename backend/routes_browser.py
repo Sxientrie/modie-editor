@@ -5,9 +5,16 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-import config
-from routes_common import get_route, post_route, validate_json
-from file_ops import atomic_write, create_backup
+from . import config
+from .routes_common import get_route, post_route, validate_json
+from .file_ops import atomic_write, create_backup
+
+
+_MAX_DIR_ITEMS = 2000
+
+_MAX_REPLACE_FILES = 500
+
+_MAX_REPLACE_FILE_SIZE = 10 * 1024 * 1024
 
 class BrowserRoutesMixin:
 
@@ -39,10 +46,15 @@ class BrowserRoutesMixin:
         except PermissionError as e:
             self._send_json({"error": str(e)}, 403)
             return
-        if not dir_path.exists() or not dir_path.is_dir():
-            self._send_json({"error": "Directory not found"}, 404)
+        try:
+            if not dir_path.exists() or not dir_path.is_dir():
+                self._send_json({"error": "Directory not found"}, 404)
+                return
+        except PermissionError:
+            self._send_json({"error": "Permission denied: Access to this directory is restricted"}, 403)
             return
         items = []
+        truncated = False
         try:
             for entry in dir_path.iterdir():
                 if not show_hidden and entry.name.startswith("."):
@@ -60,14 +72,22 @@ class BrowserRoutesMixin:
                     })
                 except Exception:
                     pass
+
+                if len(items) >= _MAX_DIR_ITEMS:
+                    truncated = True
+                    break
+        except PermissionError:
+            self._send_json({"error": "Permission denied: Cannot read directory contents"}, 403)
+            return
         except Exception as e:
             self._send_json({"error": f"Failed to list directory: {e}"}, 500)
             return
         items.sort(key=lambda x: (not x["isDir"], x["name"].lower()))
-        self._send_json({
-            "currentPath": dir_param,
-            "items": items
-        })
+        response = {"currentPath": dir_param, "items": items}
+        if truncated:
+            response["truncated"] = True
+            response["truncated_at"] = _MAX_DIR_ITEMS
+        self._send_json(response)
 
     @post_route("/api/create")
     @validate_json(["path", "name", "is_dir"])
@@ -75,25 +95,32 @@ class BrowserRoutesMixin:
         path_str = self.request_data["path"]
         name = self.request_data["name"]
         is_dir = self.request_data["is_dir"]
-        if not name or "/" in name or "\\" in name:
+
+        if not name or "/" in name or "\\" in name or "\x00" in name or name in (".", ".."):
             self._send_json({"error": "Invalid item name"}, 400)
             return
         try:
             parent_path = self._resolve_and_validate(path_str) if path_str else config.DEFAULT_MD_PATH.parent
-            target_path = parent_path / name
-            self._resolve_and_validate(str(target_path.relative_to(Path.home()) if target_path.is_relative_to(Path.home()) else target_path))
+            target_path = (parent_path / name).resolve()
+
+
+            if not config.is_in_sandbox(target_path):
+                raise PermissionError("Path traversal detected")
         except (PermissionError, ValueError) as e:
             self._send_json({"error": f"Invalid path: {e}"}, 403)
             return
         with config.get_path_lock(target_path):
-            if target_path.exists():
-                self._send_json({"error": "Item already exists"}, 400)
-                return
             try:
+                if target_path.exists():
+                    self._send_json({"error": "Item already exists"}, 400)
+                    return
                 if is_dir:
                     target_path.mkdir(parents=True, exist_ok=True)
                 else:
                     atomic_write(target_path, "")
+            except PermissionError:
+                self._send_json({"error": "Permission denied: Cannot write to this location"}, 403)
+                return
             except Exception as e:
                 self._send_json({"error": f"Failed to create: {e}"}, 500)
                 return
@@ -109,14 +136,17 @@ class BrowserRoutesMixin:
             self._send_json({"error": str(e)}, 403)
             return
         with config.get_path_lock(target_path):
-            if not target_path.exists():
-                self._send_json({"error": "Item not found"}, 404)
-                return
             try:
+                if not target_path.exists():
+                    self._send_json({"error": "Item not found"}, 404)
+                    return
                 if target_path.is_dir():
                     shutil.rmtree(target_path)
                 else:
                     target_path.unlink()
+            except PermissionError:
+                self._send_json({"error": "Permission denied: Cannot delete this item"}, 403)
+                return
             except Exception as e:
                 self._send_json({"error": f"Failed to delete: {e}"}, 500)
                 return
@@ -134,17 +164,20 @@ class BrowserRoutesMixin:
             self._send_json({"error": str(e)}, 403)
             return
         with config.get_path_lock(src_path), config.get_path_lock(dest_path):
-            if not src_path.exists():
-                self._send_json({"error": "Source item not found"}, 404)
-                return
-            if dest_path.exists():
-                self._send_json({"error": "Destination already exists"}, 400)
-                return
-            if not dest_path.parent.exists():
-                self._send_json({"error": "Destination parent directory does not exist"}, 400)
-                return
             try:
+                if not src_path.exists():
+                    self._send_json({"error": "Source item not found"}, 404)
+                    return
+                if dest_path.exists():
+                    self._send_json({"error": "Destination already exists"}, 400)
+                    return
+                if not dest_path.parent.exists():
+                    self._send_json({"error": "Destination parent directory does not exist"}, 400)
+                    return
                 shutil.move(str(src_path), str(dest_path))
+            except PermissionError:
+                self._send_json({"error": "Permission denied: Cannot rename or move this item"}, 403)
+                return
             except Exception as e:
                 self._send_json({"error": f"Failed to rename: {e}"}, 500)
                 return
@@ -160,6 +193,13 @@ class BrowserRoutesMixin:
         is_regex = self.request_data.get("is_regex", False)
         if not query:
             self._send_json({"error": "Query cannot be empty"}, 400)
+            return
+
+        if not isinstance(files, list):
+            self._send_json({"error": "'files' must be a list"}, 400)
+            return
+        if len(files) > _MAX_REPLACE_FILES:
+            self._send_json({"error": f"Too many files (max {_MAX_REPLACE_FILES})"}, 400)
             return
         import re
         if is_regex:
@@ -177,6 +217,9 @@ class BrowserRoutesMixin:
         replaced_count = 0
         errors = []
         for f_param in files:
+            if not isinstance(f_param, str):
+                errors.append(f"Invalid file path entry (must be a string)")
+                continue
             try:
                 file_path = self._resolve_and_validate(f_param)
             except PermissionError as e:
@@ -187,6 +230,10 @@ class BrowserRoutesMixin:
                 continue
             with config.get_path_lock(file_path):
                 try:
+
+                    if file_path.stat().st_size > _MAX_REPLACE_FILE_SIZE:
+                        errors.append(f"File too large to process: {f_param}")
+                        continue
                     prefix = self._get_backup_prefix(file_path)
                     content = file_path.read_text("utf-8", errors="ignore")
                     if pattern:
@@ -197,6 +244,8 @@ class BrowserRoutesMixin:
                         create_backup(file_path, config.BACKUP_DIR, prefix)
                         atomic_write(file_path, new_content)
                         replaced_count += 1
+                except PermissionError:
+                    errors.append(f"Permission denied: {f_param}")
                 except Exception as e:
                     errors.append(f"Failed to process {f_param}: {e}")
         self._send_json({

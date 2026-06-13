@@ -7,8 +7,32 @@ import re
 import sys
 import glob
 
+def atomic_write(target_path, content, encoding="utf-8"):
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.parent / f"{target_path.name}.{secrets.token_hex(4)}.tmp"
+    try:
+        if isinstance(content, bytes):
+            mode = "wb"
+        else:
+            mode = "w"
+        with open(temp_path, mode, encoding=None if isinstance(content, bytes) else encoding) as f:
+            f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(temp_path, target_path)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
 def run_tests():
-    test_files = sorted(glob.glob("test-*.js"))
+    test_files = sorted(glob.glob("tests/test-*.js"))
     if not test_files:
         print("  No test files found, skipping tests.")
         return True
@@ -23,15 +47,14 @@ def run_tests():
             sys.stderr.write(result.stdout)
             sys.stderr.write(result.stderr)
             
-    if os.path.exists("test_api.py"):
-        print("  Running API integration tests...")
-        result_py = subprocess.run(["python3", "test_api.py"], capture_output=True, text=True)
-        status_py = "PASS" if result_py.returncode == 0 else "FAIL"
-        print(f"  [{status_py}] test_api.py")
-        if result_py.returncode != 0:
-            all_passed = False
-            sys.stderr.write(result_py.stdout)
-            sys.stderr.write(result_py.stderr)
+    print("  Running API integration tests...")
+    result_py = subprocess.run(["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"], capture_output=True, text=True)
+    status_py = "PASS" if result_py.returncode == 0 else "FAIL"
+    print(f"  [{status_py}] Python unittest discover")
+    if result_py.returncode != 0:
+        all_passed = False
+        sys.stderr.write(result_py.stdout)
+        sys.stderr.write(result_py.stderr)
             
     return all_passed
 
@@ -74,7 +97,7 @@ def update_sw():
         f'const CACHE_NAME = "modie-{h}";',
         content
     )
-    sw_path.write_text(new_content, "utf-8")
+    atomic_write(sw_path, new_content, "utf-8")
 
 def update_sw_production(cache_hash):
     sw_path = Path("static/sw.js")
@@ -99,7 +122,7 @@ def update_sw_production(cache_hash):
         f'const CACHE_NAME = "modie-{cache_hash}";',
         content
     )
-    sw_path.write_text(content, "utf-8")
+    atomic_write(sw_path, content, "utf-8")
 
 def bundle_assets():
     import shutil
@@ -177,7 +200,7 @@ def main():
                 'type="module" src="/static/js/app.js"',
                 'src="/static/js/app.bundle.js"'
             )
-            index_path.write_text(new_index, "utf-8")
+            atomic_write(index_path, new_index, "utf-8")
             p_hash = compute_hash_production()
             update_sw_production(p_hash)
         else:
@@ -189,10 +212,10 @@ def main():
                 zip_path.unlink()
             except Exception:
                 pass
-        subprocess.run(["zip", "-r", "modie-editor.zip", "server.py", "config.py", "file_ops.py", "routes_common.py", "routes_file.py", "routes_browser.py", "routes_backup.py", "routes_settings.py", "routes_git.py", "routes_watch.py", "README.md", "GEMINI.md", "static", "modie", "build.py", "test_api.py", "test-markdown.js"])
+        subprocess.run(["zip", "-r", "modie-editor.zip", "server.py", "backend", "README.md", "GEMINI.md", "static", "modie", "build.py", "tests"])
     finally:
-        index_path.write_text(orig_index, "utf-8")
-        sw_path.write_text(orig_sw, "utf-8")
+        atomic_write(index_path, orig_index, "utf-8")
+        atomic_write(sw_path, orig_sw, "utf-8")
         bundle_js = Path("static/js/app.bundle.js")
         bundle_css = Path("static/css/styles.bundle.css")
         if bundle_js.exists():
@@ -205,6 +228,7 @@ def main():
                 bundle_css.unlink()
             except Exception:
                 pass
+    update_sw()
     print("\nBuild complete.")
 
 if __name__ == "__main__":

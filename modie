@@ -1,6 +1,3 @@
-#!/data/data/com.termux/files/usr/bin/bash
-
-
 mkdir -p "$HOME/.modie"
 
 
@@ -73,11 +70,20 @@ _get_url() {
     fi
 }
 
+_is_port_bound() {
+    local p=$1
+    (echo -n > /dev/tcp/127.0.0.1/$p) 2>/dev/null
+}
+
 _is_running() {
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-        return 0
-    fi
-    if (echo -n > /dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then
+    local pid
+    pid=$(_get_pid)
+    if [ -n "$pid" ]; then
+        local cmd_port
+        cmd_port=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -A1 -- "--port" | tail -n1)
+        if [ -n "$cmd_port" ] && [[ "$cmd_port" =~ ^[0-9]+$ ]]; then
+            PORT=$cmd_port
+        fi
         return 0
     fi
     return 1
@@ -96,16 +102,26 @@ _get_pid() {
 }
 
 _start() {
-    local url
-    url=$(_get_url)
     if _is_running; then
         local pid
         pid=$(_get_pid)
-        info "Server is already running (PID: $pid)"
+        local url
+        url=$(_get_url)
+        info "Server is already running (PID: $pid on port $PORT)"
         info "Opening $url ..."
         termux-open-url "$url" 2>/dev/null &
         return 0
     fi
+
+    local start_port=$PORT
+    while _is_port_bound "$PORT"; do
+        warn "Port $PORT is already in use. Trying next port..."
+        PORT=$((PORT + 1))
+        if [ "$PORT" -gt $((start_port + 20)) ]; then
+            error "Could not find a free port in range $start_port - $PORT. Aborting."
+            return 1
+        fi
+    done
 
     rm -f "$PIDFILE"
     info "Starting MODiE server on port $PORT..."

@@ -1,5 +1,5 @@
 async function runTests() {
-    const { renderMarkdown } = await import('./static/js/markdown.js');
+    const { renderMarkdown } = await import('../static/js/markdown.js');
 
     let passed = 0;
     let failed = 0;

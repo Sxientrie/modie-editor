@@ -5,16 +5,19 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import config
-from routes_common import get_route, post_route, validate_json
-from file_ops import atomic_write, create_backup
-from routes_backup import get_backup_settings, cleanup_backups
+from . import config
+from .routes_common import get_route, post_route, validate_json
+from .file_ops import atomic_write, create_backup
+from .routes_backup import get_backup_settings, cleanup_backups
+
+
+_MAX_READ_SIZE = 10 * 1024 * 1024
 
 class FileRoutesMixin:
 
     @get_route("/", require_auth=False)
     def _serve_editor(self):
-        html_path = Path(__file__).parent / "static" / "index.html"
+        html_path = Path(__file__).parent.parent / "static" / "index.html"
         if not html_path.exists():
             self.send_error(500, "static/index.html not found")
             return
@@ -54,8 +57,7 @@ class FileRoutesMixin:
     @get_route("/sw.js", require_auth=False)
     def _serve_sw(self):
         if config.DEV_MODE:
-            body = b"""// Dev mode SW: Bypass cache entirely
-self.addEventListener("install", (e) => {
+            body = b"""self.addEventListener("install", (e) => {
     self.skipWaiting();
 });
 self.addEventListener("activate", (e) => {
@@ -72,7 +74,7 @@ self.addEventListener("fetch", (e) => {
             self.end_headers()
             self.wfile.write(body)
             return
-        sw_path = Path(__file__).parent / "static" / "sw.js"
+        sw_path = Path(__file__).parent.parent / "static" / "sw.js"
         if not sw_path.exists():
             self.send_error(500, "static/sw.js not found")
             return
@@ -89,14 +91,19 @@ self.addEventListener("fetch", (e) => {
             self._send_json({"error": str(e)}, 403)
             return
         with config.get_path_lock(file_path):
-            if not file_path.exists():
-                self._send_json({"content": "", "modified": "", "size": 0})
-                return
             try:
-                content = file_path.read_text("utf-8")
+                if not file_path.exists():
+                    self._send_json({"content": "", "modified": "", "size": 0})
+                    return
                 stat = file_path.stat()
+                if stat.st_size > _MAX_READ_SIZE:
+                    self._send_json({"error": f"File too large to open ({stat.st_size:,} bytes). Maximum is {_MAX_READ_SIZE:,} bytes."}, 413)
+                    return
+                content = file_path.read_text("utf-8")
                 mod_time = datetime.fromtimestamp(stat.st_mtime).isoformat()
                 self._send_json({"content": content, "modified": mod_time, "size": stat.st_size})
+            except PermissionError:
+                self._send_json({"error": "Permission denied: Cannot read this file"}, 403)
             except Exception as e:
                 self._send_json({"error": f"Failed to read file: {e}"}, 500)
 
@@ -112,15 +119,22 @@ self.addEventListener("fetch", (e) => {
             return
         incoming_modified = self.request_data.get("modified")
         with config.get_path_lock(file_path):
-            if file_path.exists() and incoming_modified:
-                try:
-                    disk_mtime = datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
-                    if incoming_modified != disk_mtime:
-                        self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
-                        return
-                except Exception:
-                    pass
             try:
+                if file_path.exists() and incoming_modified:
+                    try:
+                        disk_mtime = file_path.stat().st_mtime
+                        disk_mtime_iso = datetime.fromtimestamp(disk_mtime).isoformat()
+                        if incoming_modified != disk_mtime_iso:
+                            try:
+                                incoming_ts = datetime.fromisoformat(incoming_modified).timestamp()
+                                if abs(incoming_ts - disk_mtime) > 0.002:
+                                    self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
+                                    return
+                            except (ValueError, OSError):
+                                self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
+                                return
+                    except OSError:
+                        pass
                 if file_path.exists():
                     prefix = self._get_backup_prefix(file_path)
                     create_backup(file_path, config.BACKUP_DIR, prefix)
@@ -128,9 +142,12 @@ self.addEventListener("fetch", (e) => {
                     cleanup_backups(file_path, prefix, max_count, max_age)
                     with config.LAST_SAVE_LOCK:
                         config.LAST_SAVE_TIMES[str(file_path.resolve())] = time.time()
+                    config.prune_last_save_times()
                 atomic_write(file_path, content)
                 stat = file_path.stat()
                 new_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
                 self._send_json({"ok": True, "modified": new_mtime, "size": stat.st_size})
+            except PermissionError:
+                self._send_json({"error": "Permission denied: Cannot write to this file"}, 403)
             except Exception as e:
                 self._send_json({"error": f"Failed to save file: {e}"}, 500)

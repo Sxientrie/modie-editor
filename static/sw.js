@@ -1,40 +1,41 @@
-const CACHE_NAME = "modie-03e52928";
+const CACHE_NAME = "modie-067c893a";
 const ASSETS = [
     "/",
     "/static/index.html",
     "/static/css/styles.css",
     "/static/css/base.css",
+    "/static/css/header.css",
     "/static/css/editor.css",
     "/static/css/components.css",
     "/static/css/modal.css",
     "/static/css/browser.css",
-    "/static/css/header.css",
+    "/static/css/git.css",
     "/static/js/app.js",
+    "/static/js/utils.js",
+    "/static/js/markdown.js",
+    "/static/js/undo.js",
+    "/static/js/indexeddb-sync.js",
+    "/static/js/api-client.js",
     "/static/js/api.js",
-    "/static/js/api-browser.js",
     "/static/js/api-browser-ops.js",
-    "/static/js/ui.js",
+    "/static/js/api-browser.js",
+    "/static/js/api-git.js",
+    "/static/js/ui-diff.js",
     "/static/js/ui-find.js",
     "/static/js/ui-outline.js",
     "/static/js/ui-replace.js",
-    "/static/js/ui-diff.js",
-    "/static/js/indexeddb-sync.js",
-    "/static/js/markdown.js",
-    "/static/js/utils.js",
-    "/static/js/gestures.js",
-    "/static/js/editor.js",
-    "/static/js/contextmenu.js",
-    "/static/js/tabs.js",
+    "/static/js/ui.js",
+    "/static/js/git.js",
     "/static/js/watch.js",
     "/static/js/settings.js",
+    "/static/js/tabs.js",
+    "/static/js/editor.js",
+    "/static/js/contextmenu.js",
     "/static/js/lucide.min.js",
-    "/static/css/git.css",
-    "/static/js/api-git.js",
-    "/static/js/git.js",
-    "/static/icon_v1.png",
-    "/static/js/api-client.js",
-    "/static/js/undo.js",
-    "/static/manifest.json"
+    "/static/js/marked.esm.js",
+    "/static/manifest.json",
+    "/static/js/global-search-ui.js",
+    "/static/icon_v1.png"
 ];
 
 self.addEventListener("install", (e) => {
@@ -71,7 +72,7 @@ self.addEventListener("fetch", (e) => {
         return;
     }
     e.respondWith(
-        caches.match(e.request).then((cachedResponse) => {
+        caches.match(e.request, { ignoreSearch: true }).then((cachedResponse) => {
             return cachedResponse || fetch(e.request);
         })
     );

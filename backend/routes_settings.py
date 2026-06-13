@@ -2,9 +2,17 @@ import json
 import os
 import re
 from pathlib import Path
-import config
-from routes_common import get_route, post_route, validate_json, validate_query
-from file_ops import atomic_write
+from . import config
+from .routes_common import get_route, post_route, validate_json, validate_query
+from .file_ops import atomic_write
+
+def is_binary(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            chunk = f.read(1024)
+            return b"\x00" in chunk
+    except Exception:
+        return True
 
 class SettingsRoutesMixin:
 
@@ -100,30 +108,44 @@ class SettingsRoutesMixin:
                 settings_data = {}
         ignored_dirs_str = settings_data.get("ignored_dirs", "node_modules, venv, .venv, __pycache__, dist, build, target")
         ignored_dirs = [d.strip() for d in ignored_dirs_str.split(",") if d.strip()]
+        show_hidden = self.query_params.get("show_hidden", "").lower()
+        if show_hidden == "":
+            show_hidden = settings_data.get("show_hidden", False)
+        else:
+            show_hidden = show_hidden == "true"
+        show_all = self.query_params.get("show_all", "").lower()
+        if show_all == "":
+            show_all = settings_data.get("show_all", False)
+        else:
+            show_all = show_all == "true"
         results = []
-        sandbox_root = Path.home().resolve()
-        shared_root = Path("/storage/emulated/0").resolve()
+        sandbox_root, shared_root = config.get_roots()
         limit = 200
         count = 0
         for root, dirs, files in os.walk(dir_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != ".modie" and d not in ignored_dirs]
+            if not show_hidden:
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d != ".modie" and d not in ignored_dirs]
+            else:
+                dirs[:] = [d for d in dirs if d != ".modie" and d not in ignored_dirs]
             for file in files:
-                if file.startswith(".") or file.endswith(".tmp"):
+                if (not show_hidden and file.startswith(".")) or file.endswith(".tmp"):
                     continue
                 ext = Path(file).suffix.lower()
-                if ext not in (".md", ".txt", ".js", ".css", ".html", ".json"):
+                if not show_all and ext not in (".md", ".txt", ".js", ".css", ".html", ".json"):
                     continue
                 file_path = Path(root) / file
                 try:
                     stat = file_path.stat()
                     if stat.st_size > 1 * 1024 * 1024:
                         continue
+                    if is_binary(file_path):
+                        continue
                     content = file_path.read_text("utf-8", errors="ignore")
                 except Exception:
                     continue
                 lines = content.splitlines()
                 for idx, line in enumerate(lines):
-                    matched = False
+
                     matched = bool(pattern.search(line)) if is_regex else (query_clean in (line if case_sensitive else line.lower()))
                     if matched:
                         rel_path = None

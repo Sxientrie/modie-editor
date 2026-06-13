@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-import config
-from routes_common import get_route, post_route, validate_json, validate_query
-from file_ops import atomic_write, create_backup
+from . import config
+from .routes_common import get_route, post_route, validate_json, validate_query
+from .file_ops import atomic_write, create_backup
 
 def cleanup_backups(file_path, prefix, max_per_file, max_age_days):
     if not config.BACKUP_DIR.exists():
@@ -72,17 +72,27 @@ class BackupRoutesMixin:
             else:
                 ext = file_path.suffix or '.md'
                 backup_pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}_\d{{6}}{re.escape(ext)}$")
-                backups = sorted([b for b in config.BACKUP_DIR.glob(f"{prefix}_*{ext}") if backup_pattern.match(b.name)], reverse=True)
+                backups = sorted(
+                    [b for b in config.BACKUP_DIR.glob(f"{prefix}_*{ext}") if backup_pattern.match(b.name)],
+                    reverse=True
+                )
             total_count = len(backups)
-            total_size = sum(b.stat().st_size for b in backups)
+
+            total_size = 0
             items = []
             for b in backups:
-                stat = b.stat()
-                items.append({
-                    "name": b.name,
-                    "size": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                })
+                try:
+                    stat = b.stat()
+                    total_size += stat.st_size
+                    items.append({
+                        "name": b.name,
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    })
+                except FileNotFoundError:
+                    total_count -= 1
+                except Exception:
+                    pass
         self._send_json({"backups": items, "total_count": total_count, "total_size": total_size})
 
     @post_route("/api/restore")
@@ -115,8 +125,11 @@ class BackupRoutesMixin:
                 return
             if file_path.exists():
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pre_restore = config.BACKUP_DIR / f"{prefix}_{ts}_pre_restore{file_path.suffix or '.md'}"
-                shutil.copy2(file_path, pre_restore)
+                pre_restore = (config.BACKUP_DIR / f"{prefix}_{ts}_pre_restore{file_path.suffix or '.md'}").resolve()
+                if not config.is_in_sandbox(pre_restore):
+                    raise PermissionError("Path traversal detected")
+                content = file_path.read_bytes()
+                atomic_write(pre_restore, content)
             try:
                 backup_content = resolved_backup.read_bytes()
                 atomic_write(file_path, backup_content)
@@ -165,14 +178,20 @@ class BackupRoutesMixin:
         total_count = 0
         total_size = 0
         per_file_map = {}
-        if config.BACKUP_DIR.exists():
-            for b in config.BACKUP_DIR.iterdir():
-                if b.is_file() and b.name.startswith("MODIE_"):
+        resolved_backup_dir = config.BACKUP_DIR.resolve()
+        if not config.is_in_sandbox(resolved_backup_dir):
+            raise PermissionError("Path traversal detected")
+        if resolved_backup_dir.exists():
+            for b in resolved_backup_dir.iterdir():
+                resolved_b = b.resolve()
+                if not config.is_in_sandbox(resolved_b):
+                    continue
+                if resolved_b.is_file() and resolved_b.name.startswith("MODIE_"):
                     try:
-                        stat = b.stat()
+                        stat = resolved_b.stat()
                         total_count += 1
                         total_size += stat.st_size
-                        parts = b.name.split("_")
+                        parts = resolved_b.name.split("_")
                         if len(parts) >= 2:
                             prefix = f"MODIE_{parts[1]}"
                             if prefix not in per_file_map:
@@ -190,11 +209,17 @@ class BackupRoutesMixin:
     @post_route("/api/backup-purge")
     def _api_backup_purge(self):
         deleted_count = 0
-        if config.BACKUP_DIR.exists():
-            for b in config.BACKUP_DIR.iterdir():
-                if b.is_file() and b.name.startswith("MODIE_"):
+        resolved_backup_dir = config.BACKUP_DIR.resolve()
+        if not config.is_in_sandbox(resolved_backup_dir):
+            raise PermissionError("Path traversal detected")
+        if resolved_backup_dir.exists():
+            for b in resolved_backup_dir.iterdir():
+                resolved_b = b.resolve()
+                if not config.is_in_sandbox(resolved_b):
+                    continue
+                if resolved_b.is_file() and resolved_b.name.startswith("MODIE_"):
                     try:
-                        b.unlink()
+                        resolved_b.unlink()
                         deleted_count += 1
                     except Exception:
                         pass

@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-import config
-from routes_common import get_route, post_route, validate_json, validate_query
+from . import config
+from .routes_common import get_route, post_route, validate_json, validate_query
+
+
+_GIT_ROOT_MAX_DEPTH = 30
+
+_MAX_COMMIT_MSG_LEN = 4096
 
 class GitRoutesMixin:
 
@@ -14,8 +19,9 @@ class GitRoutesMixin:
             curr = target_path.parent
         else:
             curr = target_path
-        
-        while True:
+
+        depth = 0
+        while depth < _GIT_ROOT_MAX_DEPTH:
             if (curr / ".git").is_dir():
                 return curr
             try:
@@ -24,6 +30,7 @@ class GitRoutesMixin:
                 if parent == curr:
                     break
                 curr = parent
+                depth += 1
             except Exception:
                 break
         return None
@@ -82,7 +89,13 @@ class GitRoutesMixin:
                 continue
             x = line[0]
             y = line[1]
-            filepath = line[3:].strip('"')
+
+
+            raw_path = line[3:].strip('"')
+            if " -> " in raw_path:
+                filepath = raw_path.split(" -> ", 1)[1].strip('"')
+            else:
+                filepath = raw_path
 
             if x == '?' and y == '?':
                 untracked.append(filepath)
@@ -120,10 +133,11 @@ class GitRoutesMixin:
             self._send_json({"error": "Not in a Git repository"}, 400)
             return
 
+
         if stage:
-            code, out, err = self._run_git(repo_root, ["add", file_path])
+            code, out, err = self._run_git(repo_root, ["add", "--", file_path])
         else:
-            code, out, err = self._run_git(repo_root, ["reset", "HEAD", file_path])
+            code, out, err = self._run_git(repo_root, ["reset", "HEAD", "--", file_path])
 
         if code != 0:
             self._send_json({"error": f"Failed to stage/unstage file: {err}"}, 500)
@@ -139,6 +153,10 @@ class GitRoutesMixin:
 
         if not message.strip():
             self._send_json({"error": "Commit message cannot be empty"}, 400)
+            return
+
+        if len(message) > _MAX_COMMIT_MSG_LEN:
+            self._send_json({"error": f"Commit message too long (max {_MAX_COMMIT_MSG_LEN} characters)"}, 400)
             return
 
         try:
@@ -184,7 +202,8 @@ class GitRoutesMixin:
             self._send_json({"error": "Not in a Git repository"}, 400)
             return
 
-        args = ["diff", "--cached", file_path] if staged else ["diff", file_path]
+
+        args = ["diff", "--cached", "--", file_path] if staged else ["diff", "--", file_path]
         code, out, err = self._run_git(repo_root, args)
         if code != 0:
             self._send_json({"error": f"Diff failed: {err}"}, 500)

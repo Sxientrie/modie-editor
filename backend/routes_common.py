@@ -41,7 +41,15 @@ def validate_json(required_keys=None):
                     self._send_json({"error": "Payload too large"}, 413)
                     return
                 body = self._read_body()
-                data = json.loads(body) if body else {}
+                if body:
+                    try:
+                        decoded_body = body.decode("utf-8")
+                    except UnicodeDecodeError as e:
+                        self._send_json({"error": f"Invalid UTF-8 encoding: {e}"}, 400)
+                        return
+                    data = json.loads(decoded_body)
+                else:
+                    data = {}
             except json.JSONDecodeError as e:
                 self._send_json({"error": f"Invalid JSON body: {e}"}, 400)
                 return

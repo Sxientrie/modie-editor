@@ -190,7 +190,9 @@ export function syncSettingsToServer() {
         browser_density: browserDensity,
         ignored_dirs: ignoredDirs,
         backup_max_count: backupMaxCount,
-        backup_max_age_days: backupMaxAge
+        backup_max_age_days: backupMaxAge,
+        starred_items: state.starredItems || [],
+        recent_files: state.recentFiles || []
     });
 }
 
@@ -198,6 +200,8 @@ export async function initSettings() {
     window.lucide.createIcons();
     const serverSettings = await api.getSettings(ctx);
     if (serverSettings) {
+        state.starredItems = serverSettings.starred_items || [];
+        state.recentFiles = serverSettings.recent_files || [];
         localStorage.setItem('show_hidden', serverSettings.show_hidden);
         localStorage.setItem('show_all', serverSettings.show_all);
         localStorage.setItem('auto_save_delay', serverSettings.auto_save_delay);

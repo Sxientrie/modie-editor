@@ -5,7 +5,7 @@ import * as ui from './ui.js';
 import { setupEditor } from './editor.js';
 import { setupContextMenu } from './contextmenu.js';
 import { initWatch, startWatching, stopWatching } from './watch.js';
-import { initTabs, renderTabs, saveCurrentTabState, switchToFile, closeTab, openFile, closeFile } from './tabs.js';
+import { initTabs, renderTabs, saveCurrentTabState, saveWorkspaceState, switchToFile, closeTab, openFile, closeFile } from './tabs.js';
 import { initSettingsModule, syncSettingsToServer, initSettings } from './settings.js';
 import { setupBrowser } from './browser.js';
 import { setupFind } from './ui-find.js';
@@ -46,26 +46,28 @@ const rawState = {
     activeFilePath: null, activeFileModified: null, currentPath: '', findCaseSensitive: getLS('find_case_sensitive'),
     findWholeWord: getLS('find_whole_word'), findRegex: getLS('find_regex'), globalSearchCaseSensitive: getLS('global_search_case_sensitive'),
     globalSearchRegex: getLS('global_search_regex'), contextItem: null, savedSelectionStart: null, savedSelectionEnd: null,
-    savedScrollTop: null, currentBackupContent: null, openFiles: {}
+    savedScrollTop: null, currentBackupContent: null, openFiles: {}, isBacking: false,
+    starredItems: [], recentFiles: []
 };
 
-const state = makeDeepProxy(rawState, stateHandler);
+export const state = makeDeepProxy(rawState, stateHandler);
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
 const tabPanels = { 'browser': 'panelBrowser', 'edit': 'panelEdit', 'preview': 'panelPreview', 'backups': 'panelBackups', 'git': 'panelGit' };
 
-const ctx = {
+export const ctx = {
     state, editor: $('#editor'), lineNumbers: $('#lineNumbers'), preview: $('#preview'), cursorPos: $('#cursorPos'),
     wordCount: $('#wordCount'), findBar: $('#findBar'), findInput: $('#findInput'), findCount: $('#findCount'),
     setStatus: ui.setStatus, toast: ui.toast, updateLineNumbers: () => ui.updateLineNumbers(ctx),
     updateWordCount: () => ui.updateWordCount(ctx), formatBytes: ui.formatBytes, switchTab,
     checkDraft: () => ui.checkDraft(ctx), clearDraft: () => ui.clearDraft(ctx), updateCursorPos: () => ui.updateCursorPos(ctx),
-    openFile, showConfirm, showPrompt, renderMarkdown, renderTabs, closeTab, switchToFile, stopWatching, startWatching, subscribe
+    openFile, showConfirm, showPrompt, renderMarkdown, renderTabs, closeTab, switchToFile, stopWatching, startWatching, subscribe,
+    syncSettingsToServer: () => syncSettingsToServer()
 };
 
-function showConfirm(title, message) {
+export function showConfirm(title, message) {
     return new Promise((resolve) => {
         const modal = $('#genericConfirmModal'), titleEl = $('#genericConfirmTitle'), textEl = $('#genericConfirmText');
         const btnCancel = $('#btnGenericConfirmCancel'), btnConfirm = $('#btnGenericConfirmConfirm');
@@ -90,7 +92,7 @@ function showConfirm(title, message) {
     });
 }
 
-function showPrompt(title, message, defaultValue = '') {
+export function showPrompt(title, message, defaultValue = '') {
     return new Promise((resolve) => {
         const modal = $('#genericPromptModal'), titleEl = $('#genericPromptTitle'), textEl = $('#genericPromptText');
         const inputEl = $('#genericPromptInput'), btnCancel = $('#btnGenericPromptCancel'), btnConfirm = $('#btnGenericPromptConfirm');
@@ -180,10 +182,35 @@ $('#browserBreadcrumbs').addEventListener('click', (e) => {
     const item = e.target.closest('.breadcrumb-item');
     if (item) api.loadDirectory(ctx, item.dataset.path);
 });
+const btnBrowserHome = $('#btnBrowserHome');
+if (btnBrowserHome) {
+    btnBrowserHome.addEventListener('click', () => {
+        api.loadDirectory(ctx, '');
+    });
+}
 
 $('#btnBack').addEventListener('click', () => {
     if (state.activeFilePath) {
-        closeTab(state.activeFilePath);
+        saveCurrentTabState();
+        stopWatching();
+        state.activeFilePath = null;
+        
+        $('#btnBack').style.display = 'none';
+        $('#logoIcon').style.display = 'flex';
+        $('#btnFind').style.display = 'none';
+        $('#btnOutline').style.display = 'none';
+        $('#btnSave').style.display = 'none';
+        $('.tab-bar').style.display = 'none';
+        const toolbar = $('#formatToolbar');
+        if (toolbar) toolbar.style.display = 'none';
+        
+        $('#headerTitle').textContent = 'MODiE';
+        $('#headerSubtitle').textContent = 'Browser';
+        
+        switchTab('browser');
+        api.loadDirectory(ctx, state.currentPath);
+        renderTabs();
+        saveWorkspaceState();
     } else {
         $('#btnBack').style.display = 'none';
         $('#logoIcon').style.display = 'flex';
@@ -206,11 +233,14 @@ $('#authTokenInput').addEventListener('keydown', (e) => {
     }
 });
 
-const urlParams = new URLSearchParams(window.location.search);
-if (urlParams.has('token')) {
-    localStorage.setItem('editor_token', urlParams.get('token'));
-    window.history.replaceState({}, document.title, window.location.pathname);
+export function bootstrapToken(win = window, doc = document, storage = localStorage) {
+    const urlParams = new URLSearchParams(win.location.search);
+    if (urlParams.has('token')) {
+        storage.setItem('editor_token', urlParams.get('token'));
+        win.history.replaceState({}, doc.title, win.location.pathname);
+    }
 }
+bootstrapToken();
 
 const btnBrowserGit = $('#btnBrowserGit');
 if (btnBrowserGit) {
@@ -222,6 +252,18 @@ if (btnBrowserGit) {
         switchTab('git');
     });
 }
+
+subscribe((prop, value) => {
+    if (prop === 'activeFilePath' && value) {
+        const name = value.split('/').pop();
+        let recent = [...(state.recentFiles || [])];
+        recent = recent.filter(x => x.path !== value);
+        recent.unshift({ name, path: value });
+        if (recent.length > 5) recent.pop();
+        state.recentFiles = recent;
+        syncSettingsToServer();
+    }
+});
 
 initSettingsModule(ctx, state, closeFile);
 initWatch(ctx, state); initTabs(ctx, state, startWatching, stopWatching, switchTab); initSettings();
@@ -264,14 +306,34 @@ function closeActiveModal() {
     return false;
 }
 
-window.addEventListener('popstate', () => {
+window.addEventListener('popstate', (e) => {
     if (closeActiveModal()) return;
     const outline = $('#outlineDrawer');
     const settings = $('#settingsDrawer');
     const overlay = $('#drawerOverlay');
-    if (outline && outline.classList.contains('active')) outline.classList.remove('active');
-    if (settings && settings.classList.contains('active')) settings.classList.remove('active');
-    if (overlay) overlay.classList.remove('active');
+    let drawerClosed = false;
+    if (outline && outline.classList.contains('active')) {
+        outline.classList.remove('active');
+        drawerClosed = true;
+    }
+    if (settings && settings.classList.contains('active')) {
+        settings.classList.remove('active');
+        drawerClosed = true;
+    }
+    if (overlay && drawerClosed) {
+        overlay.classList.remove('active');
+        return;
+    }
+
+    if (e.state && e.state.type === 'directory') {
+        state.isBacking = true;
+        if (state.currentTab !== 'browser') {
+            switchTab('browser');
+        }
+        api.loadDirectory(ctx, e.state.path).finally(() => {
+            state.isBacking = false;
+        });
+    }
 });
 
 if ('serviceWorker' in navigator) {

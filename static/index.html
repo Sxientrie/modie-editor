@@ -184,7 +184,7 @@
             <div class="settings-group">
                 <span class="settings-label">Editor Font Size</span>
                 <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-                    <input type="range" id="settingZoomRange" min="12" max="28" step="2" value="14" style="flex: 1;">
+                    <input type="range" id="settingZoomRange" min="8" max="48" step="2" value="14" style="flex: 1;">
                     <span id="settingZoomVal" style="font-size: 13px; font-weight: 600; min-width: 20px; text-align: right;">14</span>
                 </div>
             </div>
@@ -423,6 +423,7 @@
         <div class="modal context-modal">
             <h3 id="contextMenuTitle">Item Actions</h3>
             <div class="context-menu-options">
+                <button class="context-option-btn" id="btnContextStar"><i data-lucide="star"></i> <span id="contextStarText">Star Item</span></button>
                 <button class="context-option-btn" id="btnContextRename"><i data-lucide="edit-3"></i> Rename</button>
                 <button class="context-option-btn" id="btnContextMove"><i data-lucide="folder-output"></i> Move</button>
                 <button class="context-option-btn" id="btnContextCopyPath"><i data-lucide="copy"></i> Copy Path</button>

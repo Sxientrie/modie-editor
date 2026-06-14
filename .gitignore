@@ -8,3 +8,10 @@ modie-editor.zip
 node_modules/
 .vscode/
 .idea/
+
+# Audit/Task reports
+AUDIT_REPORT.md
+CODEBASE_MAP.md
+FINDINGS.md
+LOOP_STATE.md
+REPAIR_PLAN.md

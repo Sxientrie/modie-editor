@@ -53,7 +53,33 @@ def create_backup(file_path, backup_dir, prefix):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"{prefix}_{ts}{file_path.suffix or '.md'}"
     backup_path = b_dir / backup_name
-    content = file_path.read_bytes()
-    atomic_write(backup_path, content)
+    
+    # Avoid memory exhaustion on large files by copying in chunks via an atomic replace.
+    temp_path = backup_path.parent / f"{backup_path.name}.{secrets.token_hex(4)}.tmp"
+    try:
+        try:
+            with open(file_path, "rb") as f_src:
+                with open(temp_path, "wb") as f_dest:
+                    while True:
+                        chunk = f_src.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f_dest.write(chunk)
+                    f_dest.flush()
+                    try:
+                        os.fsync(f_dest.fileno())
+                    except OSError:
+                        pass
+            os.replace(temp_path, backup_path)
+        except Exception as e:
+            # Wrap all read/write/replace exceptions in OSError for parent clean warning logging.
+            raise OSError(f"Failed to copy backup data: {e}") from e
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
     return backup_path
+
 

@@ -18,6 +18,7 @@ from .routes_browser import BrowserRoutesMixin
 from .routes_file import FileRoutesMixin
 from .routes_git import GitRoutesMixin
 from .routes_settings import SettingsRoutesMixin
+from .routes_search import SearchRoutesMixin
 from .routes_watch import WatchRoutesMixin
 from . import config
 
@@ -69,7 +70,7 @@ def cleanup_temp_files():
             sandbox_root, shared_root = config.get_roots()
             temp_pattern = re.compile(r"^.*\.[0-9a-f]{8}\.tmp$")
             
-            # Recursively purge in Termux home sandbox root (typically smaller and faster to walk)
+            # Why: Termux home sandbox root is typically smaller, making it safe to run rglob recursive walks without performance issues.
             if sandbox_root.exists():
                 for p in sandbox_root.rglob("*.tmp"):
                     if temp_pattern.match(p.name):
@@ -112,25 +113,48 @@ class BaseEditorHandler(BaseHTTPRequestHandler):
 
     def _resolve_and_validate(self, path_str):
         sandbox_root, shared_root = config.get_roots()
+        sdcard_root = config.get_sdcard_root()
         if path_str == "termux_home" or path_str.startswith("termux_home/"):
             rel = path_str[11:].lstrip("/")
             resolved = (sandbox_root / rel).resolve()
         elif path_str == "storage_shared" or path_str.startswith("storage_shared/"):
             rel = path_str[14:].lstrip("/")
             resolved = (shared_root / rel).resolve()
+        elif sdcard_root and (path_str == "storage_external" or path_str.startswith("storage_external/")):
+            rel = path_str[16:].lstrip("/")
+            resolved = (sdcard_root / rel).resolve()
         else:
             resolved = (sandbox_root / path_str.lstrip("/")).resolve()
         if not config.is_in_sandbox(resolved):
             raise PermissionError("Path traversal detected")
         return resolved
 
+    def _is_protected_path(self, target_path):
+        # Why: Protect the app's own configuration/backup directory (~/.modie) and its contents
+        # from being deleted or renamed/moved via browser operations.
+        try:
+            modie_dir = config.DEFAULT_MD_PATH.parent.resolve()
+            resolved_target = target_path.resolve()
+            if resolved_target == modie_dir or modie_dir in resolved_target.parents:
+                return True
+        except Exception:
+            pass
+        return False
+
     def _get_backup_prefix(self, file_path):
         try:
             sandbox_root, shared_root = config.get_roots()
+            sdcard_root = config.get_sdcard_root()
             try:
                 rel = file_path.relative_to(sandbox_root)
             except ValueError:
-                rel = file_path.relative_to(shared_root)
+                try:
+                    rel = file_path.relative_to(shared_root)
+                except ValueError:
+                    if sdcard_root:
+                        rel = file_path.relative_to(sdcard_root)
+                    else:
+                        raise
             h = hashlib.sha256(str(rel).encode("utf-8")).hexdigest()[:8]
             return f"MODIE_{h}"
         except Exception:
@@ -267,6 +291,7 @@ class EditorHandler(
     FileRoutesMixin,
     GitRoutesMixin,
     SettingsRoutesMixin,
+    SearchRoutesMixin,
     WatchRoutesMixin,
     BaseEditorHandler
 ):

@@ -17,6 +17,19 @@ export function setupContextMenu(ctx, state, api, ui) {
         };
         const titleEl = $('#contextMenuTitle');
         if (titleEl) titleEl.textContent = state.contextItem.name;
+        
+        const starTextEl = $('#contextStarText');
+        const starIconEl = $('#btnContextStar i');
+        if (starTextEl) {
+            const starred = state.starredItems || [];
+            const isAlreadyStarred = starred.some(x => x.path === state.contextItem.path);
+            starTextEl.textContent = isAlreadyStarred ? 'Unstar Item' : 'Star Item';
+            if (starIconEl) {
+                starIconEl.className = '';
+                starIconEl.setAttribute('data-lucide', isAlreadyStarred ? 'star-off' : 'star');
+            }
+        }
+
         const modalEl = $('#contextMenuModal');
         if (modalEl) {
             modalEl.classList.add('active');
@@ -150,7 +163,7 @@ export function setupContextMenu(ctx, state, api, ui) {
                 state.activeFilePath = targetNewPath;
                 const titleEl = $('#headerTitle');
                 if (titleEl) {
-                    titleEl.textContent = targetNewPath.split('/').pop();
+                    titleEl.textContent = 'MODiE';
                 }
                 if (ctx.stopWatching) ctx.stopWatching();
                 if (ctx.startWatching) ctx.startWatching(targetNewPath);
@@ -171,6 +184,33 @@ export function setupContextMenu(ctx, state, api, ui) {
         // Reset click interception flag to avoid locking out future folder list clicks
         ignoreNextClick = false;
     };
+
+    safeAddListener('#btnContextStar', 'click', () => {
+        closeContextMenu();
+        const item = state.contextItem;
+        if (!item) return;
+        
+        let starred = [...(state.starredItems || [])];
+        const idx = starred.findIndex(x => x.path === item.path);
+        
+        if (idx > -1) {
+            starred.splice(idx, 1);
+            ctx.toast('Item removed from Starred list', 'success');
+        } else {
+            starred.push({
+                name: item.name,
+                path: item.path,
+                isDir: item.isDir
+            });
+            ctx.toast('Item added to Starred list', 'success');
+        }
+        
+        state.starredItems = starred;
+        ctx.syncSettingsToServer();
+        if (state.currentPath === '') {
+            api.loadDirectory(ctx, '');
+        }
+    });
 
     safeAddListener('#btnContextRename', 'click', async () => {
         closeContextMenu(true);

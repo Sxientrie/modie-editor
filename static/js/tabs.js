@@ -2,7 +2,7 @@ import { escapeHtml } from './utils.js';
 import * as api from './api.js';
 import * as ui from './ui.js';
 import { getOrCreateStack, removeStack } from './undo.js';
-import { apiGet } from './api-client.js';
+import { apiGet, apiPost } from './api-client.js';
 
 let ctx = null;
 let state = null;
@@ -33,7 +33,8 @@ export function renderTabs() {
         return;
     }
     container.style.display = 'flex';
-    container.innerHTML = paths.map(path => {
+    
+    const tabsHtml = paths.map(path => {
         const name = path.split('/').pop();
         const isActive = path === state.activeFilePath;
         const isDirty = state.openFiles[path].isDirty;
@@ -45,6 +46,14 @@ export function renderTabs() {
             </div>
         `;
     }).join('');
+
+    const newTabHtml = `
+        <div class="file-tab-new" id="btnNewTab" title="New Tab">
+            <i data-lucide="plus" style="width: 12px; height: 12px;"></i>
+        </div>
+    `;
+
+    container.innerHTML = tabsHtml + newTabHtml;
     window.lucide.createIcons({ nodes: [container] });
     
     container.querySelectorAll('.file-tab').forEach(tab => {
@@ -61,6 +70,22 @@ export function renderTabs() {
             closeTab(targetPath);
         });
     });
+
+    const newTabBtn = $('#btnNewTab');
+    if (newTabBtn) {
+        newTabBtn.addEventListener('click', async () => {
+            const name = await ctx.showPrompt('New File', 'Enter file name:');
+            if (name) {
+                try {
+                    await apiPost('/api/create', { path: state.currentPath, name, is_dir: false }, { ctx });
+                    const filePath = state.currentPath ? `${state.currentPath}/${name}` : name;
+                    await openFile(filePath);
+                } catch (err) {
+                    ctx.toast(err.message || 'Failed to create file', 'error');
+                }
+            }
+        });
+    }
 }
 
 export function saveCurrentTabState() {
@@ -83,6 +108,7 @@ export function saveWorkspaceState() {
     saveCurrentTabState();
     const workspace = {
         activeFilePath: state.activeFilePath,
+        currentPath: state.currentPath,
         openFiles: Object.keys(state.openFiles).map(path => {
             const f = state.openFiles[path];
             return {
@@ -115,8 +141,23 @@ export function switchToFile(path) {
         ui.updateDirtyState(ctx);
         if (ctx.updateWordCount) ctx.updateWordCount();
         
-        $('#headerTitle').textContent = path.split('/').pop();
-        $('#headerSubtitle').textContent = 'Editing';
+        $('#headerTitle').textContent = 'MODiE';
+        $('#headerSubtitle').textContent = 'Editor';
+        
+        $('.tab-bar').style.display = 'flex';
+        $('#fileTabs').style.display = 'flex';
+        $('#btnBack').style.display = 'inline-flex';
+        $('#logoIcon').style.display = 'none';
+        $('#btnFind').style.display = 'inline-flex';
+        $('#btnOutline').style.display = 'inline-flex';
+        $('#btnSave').style.display = 'inline-flex';
+
+        if (state.currentTab === 'browser') {
+            switchTab('edit');
+        } else {
+            const toolbar = $('#formatToolbar');
+            if (toolbar) toolbar.style.display = state.currentTab === 'edit' ? 'flex' : 'none';
+        }
         
         startWatching(path);
         renderTabs();
@@ -185,9 +226,9 @@ export async function closeTab(path, forceSilent = false) {
 export function openFile(path) {
     if (state.openFiles[path]) {
         switchToFile(path);
-        return;
+        return Promise.resolve();
     }
-    api.loadContent(ctx, path).then(() => {
+    return api.loadContent(ctx, path).then(() => {
         $('.tab-bar').style.display = 'flex';
         $('#fileTabs').style.display = 'flex';
         $('#btnBack').style.display = 'inline-flex';
@@ -195,8 +236,8 @@ export function openFile(path) {
         $('#btnFind').style.display = 'inline-flex';
         $('#btnOutline').style.display = 'inline-flex';
         $('#btnSave').style.display = 'inline-flex';
-        $('#headerTitle').textContent = path.split('/').pop();
-        $('#headerSubtitle').textContent = 'Editing';
+        $('#headerTitle').textContent = 'MODiE';
+        $('#headerSubtitle').textContent = 'Editor';
         
         state.openFiles[path] = {
             path: path,
@@ -263,39 +304,62 @@ export async function restoreWorkspace(workspace) {
     
     const remainingPaths = Object.keys(state.openFiles);
     if (remainingPaths.length > 0) {
-        $('.tab-bar').style.display = 'flex';
-        $('#fileTabs').style.display = 'flex';
-        $('#btnBack').style.display = 'inline-flex';
-        $('#logoIcon').style.display = 'none';
-        $('#btnFind').style.display = 'inline-flex';
-        $('#btnOutline').style.display = 'inline-flex';
-        $('#btnSave').style.display = 'inline-flex';
+        if (workspace.activeFilePath !== null && activeFileFound) {
+            const activePath = workspace.activeFilePath;
+            const targetState = state.openFiles[activePath];
+            state.activeFilePath = activePath;
+            ctx.editor.value = targetState.content;
+            state.originalContent = targetState.originalContent;
+            state.isDirty = false;
+            state.activeFileModified = targetState.modified;
+            
+            ctx.editor.setSelectionRange(targetState.selectionStart || 0, targetState.selectionEnd || 0);
+            ctx.editor.scrollTop = targetState.scrollTop || 0;
+            
+            ui.updateLineNumbers(ctx);
+            ui.updateDirtyState(ctx);
+            if (ctx.updateWordCount) ctx.updateWordCount();
+            
+            $('#headerTitle').textContent = 'MODiE';
+            $('#headerSubtitle').textContent = 'Editor';
+            
+            $('.tab-bar').style.display = 'flex';
+            $('#fileTabs').style.display = 'flex';
+            $('#btnBack').style.display = 'inline-flex';
+            $('#logoIcon').style.display = 'none';
+            $('#btnFind').style.display = 'inline-flex';
+            $('#btnOutline').style.display = 'inline-flex';
+            $('#btnSave').style.display = 'inline-flex';
+
+            ui.checkDraft(ctx);
+            
+            startWatching(activePath);
+            renderTabs();
+            switchTab('edit');
+        } else {
+            state.activeFilePath = null;
+            state.activeFileModified = null;
+            state.isDirty = false;
+            ctx.editor.value = '';
+            state.originalContent = '';
+            ctx.preview.innerHTML = '';
+            
+            $('.tab-bar').style.display = 'none';
+            $('#fileTabs').style.display = 'flex';
+            $('#btnBack').style.display = 'none';
+            $('#logoIcon').style.display = 'flex';
+            $('#btnFind').style.display = 'none';
+            $('#btnOutline').style.display = 'none';
+            $('#btnSave').style.display = 'none';
+            
+            $('#headerTitle').textContent = 'MODiE';
+            $('#headerSubtitle').textContent = 'Browser';
+            
+            renderTabs();
+            switchTab('browser');
+        }
         
-        const activePath = activeFileFound ? workspace.activeFilePath : remainingPaths[remainingPaths.length - 1];
-        const targetState = state.openFiles[activePath];
-        state.activeFilePath = activePath;
-        ctx.editor.value = targetState.content;
-        state.originalContent = targetState.originalContent;
-        state.isDirty = false;
-        state.activeFileModified = targetState.modified;
-        
-        ctx.editor.setSelectionRange(targetState.selectionStart || 0, targetState.selectionEnd || 0);
-        ctx.editor.scrollTop = targetState.scrollTop || 0;
-        
-        ui.updateLineNumbers(ctx);
-        ui.updateDirtyState(ctx);
-        if (ctx.updateWordCount) ctx.updateWordCount();
-        
-        $('#headerTitle').textContent = activePath.split('/').pop();
-        $('#headerSubtitle').textContent = 'Editing';
-        
-        ui.checkDraft(ctx);
-        
-        startWatching(activePath);
-        renderTabs();
-        switchTab('edit');
-        
-        const parentPath = activePath.substring(0, activePath.lastIndexOf('/'));
+        const parentPath = workspace.currentPath !== undefined ? workspace.currentPath : (workspace.activeFilePath ? workspace.activeFilePath.substring(0, workspace.activeFilePath.lastIndexOf('/')) : '');
         api.loadDirectory(ctx, parentPath);
         return true;
     }

@@ -1,6 +1,7 @@
 import os
 import subprocess
 import json
+import codecs
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -21,7 +22,6 @@ class GitRoutesMixin:
         path_str = path_str.strip()
         if path_str.startswith('"') and path_str.endswith('"'):
             try:
-                import codecs
                 escaped_bytes = path_str[1:-1].encode('latin1')
                 unescaped_bytes, _ = codecs.escape_decode(escaped_bytes)
                 return unescaped_bytes.decode('utf-8')

@@ -45,6 +45,22 @@ def get_roots():
         shared_root.mkdir(parents=True, exist_ok=True)
     return sandbox_root, shared_root
 
+# Why: Termux sets up storage symlinks under ~/storage/. We scan these to detect the external 
+# physical SD card mount (typically /storage/XXXX-XXXX) while ignoring /storage/emulated 
+# which represents the internal shared storage root (handled separately).
+def get_sdcard_root():
+    home_storage = Path.home() / "storage"
+    if home_storage.exists() and home_storage.is_dir():
+        for item in home_storage.iterdir():
+            if item.is_symlink() or item.is_dir():
+                try:
+                    resolved = item.resolve()
+                    if str(resolved).startswith("/storage/") and not str(resolved).startswith("/storage/emulated"):
+                        return resolved
+                except Exception:
+                    pass
+    return None
+
 def is_in_sandbox(target_path):
     sandbox_root, shared_root = get_roots()
     try:
@@ -57,6 +73,13 @@ def is_in_sandbox(target_path):
         return True
     except ValueError:
         pass
+    sdcard_root = get_sdcard_root()
+    if sdcard_root:
+        try:
+            target_path.relative_to(sdcard_root)
+            return True
+        except ValueError:
+            pass
     return False
 
 

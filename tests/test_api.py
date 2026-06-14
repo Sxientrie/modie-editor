@@ -125,6 +125,15 @@ class TestAPI(unittest.TestCase):
         self.assertIn("dir1", names)
         self.assertIn("test.md", names)
 
+    def test_directory_listing_empty_path(self):
+        self.handler.path = "/api/browser?path="
+        self.handler._api_list_directory()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data["currentPath"], "")
+        self.assertIn("storage", self.handler.response_data)
+        self.assertNotIn("termux_home", self.handler.response_data["storage"])
+        self.assertIn("storage_shared", self.handler.response_data["storage"])
+
     def test_directory_listing_pagination(self):
         (self.test_dir / "termux_home").mkdir()
         (self.test_dir / "termux_home" / "dir1").mkdir()
@@ -215,14 +224,14 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(backup_path.read_text("utf-8"), "source content")
         self.assertEqual(backup_path.parent, backup_dir)
 
-    @patch("backend.file_ops.atomic_write", side_effect=OSError("Disk full"))
-    def test_file_ops_create_backup_failure(self, mock_atomic_write):
+    def test_file_ops_create_backup_failure(self):
         from backend.file_ops import create_backup
         test_file = self.test_dir / "source.txt"
         atomic_write(test_file, "source content")
         bad_backup_dir = self.test_dir / "bad_backups"
-        with self.assertRaises(Exception):
-            create_backup(test_file, bad_backup_dir, "MODIE_test")
+        with patch("backend.file_ops.os.replace", side_effect=OSError("Disk full")):
+            with self.assertRaises(Exception):
+                create_backup(test_file, bad_backup_dir, "MODIE_test")
 
     def test_file_ops_create_backup_no_fallback(self):
         from backend.file_ops import create_backup
@@ -233,6 +242,52 @@ class TestAPI(unittest.TestCase):
         with self.assertRaises(Exception):
             create_backup(test_file, bad_backup_dir, "MODIE_test")
 
+    def test_save_succeeds_when_backup_fails(self):
+        atomic_write(self.test_dir / "test.md", "old")
+        payload = json.dumps({"path": "test.md", "content": "new", "modified": None}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        with patch("backend.routes_file.create_backup", side_effect=OSError("fsync unsupported")):
+            self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertTrue(self.handler.response_data["ok"])
+        self.assertIn("warning", self.handler.response_data)
+        self.assertEqual((self.test_dir / "test.md").read_text(), "new")
+
+    def test_replace_succeeds_when_backup_fails(self):
+        f1 = self.test_dir / "file1.md"
+        atomic_write(f1, "I like apple")
+        payload = json.dumps({
+            "query": "apple",
+            "replace": "orange",
+            "files": ["file1.md"],
+            "case_sensitive": True,
+            "is_regex": False
+        }).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        patcher = patch("backend.routes_browser.create_backup", side_effect=OSError("fsync unsupported"))
+        patcher.start()
+        try:
+            self.handler._api_replace_files()
+            self.assertEqual(self.handler.response_status, 200)
+            task_id = self.handler.response_data["task_id"]
+            import time
+            from backend.routes_browser import REPLACE_TASKS, REPLACE_TASKS_LOCK
+            for _ in range(50):
+                with REPLACE_TASKS_LOCK:
+                    task = REPLACE_TASKS.get(task_id)
+                if task and task.get("status") == "done":
+                    break
+                time.sleep(0.02)
+        finally:
+            patcher.stop()
+        self.handler.path = f"/api/replace/status?task_id={task_id}"
+        self.handler._api_replace_status()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data["replaced_files"], 1)
+        self.assertEqual(f1.read_text("utf-8"), "I like orange")
+        self.assertTrue(any("Backup failed" in err for err in self.handler.response_data["errors"]))
 
     def test_route_discovery(self):
         from backend.routes_common import GET_ROUTES, POST_ROUTES
@@ -359,6 +414,53 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(self.handler.response_status, 200)
         self.assertEqual(self.handler.response_data, {"missing": []})
 
+    def test_save_content_invalid_types(self):
+        payload = json.dumps({"path": 12345, "content": "Hello World"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 400)
+        self.assertIn("must be strings", self.handler.response_data["error"])
+
+    def test_verify_drafts_invalid_types(self):
+        payload = json.dumps({"paths": "not a list"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_verify_drafts()
+        self.assertEqual(self.handler.response_status, 400)
+        self.assertIn("must be a list of strings", self.handler.response_data["error"])
+
+    def test_invalid_utf8_payload(self):
+        payload = b'{"path": "test.md", "content": "\xff\xfe"}'
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 400)
+        self.assertIn("Invalid UTF-8 encoding", self.handler.response_data["error"])
+
+    def test_save_and_merge_settings(self):
+        from backend import config
+        atomic_write(config.SETTINGS_FILE, json.dumps({"theme": "dark", "zoom": 14}))
+        
+        payload = json.dumps({
+            "theme": "light",
+            "starred_items": [{"name": "Starred File", "path": "termux_home/starred.md", "isDir": False}],
+            "recent_files": [{"name": "Recent File", "path": "termux_home/recent.md"}]
+        }).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_save_settings()
+        self.assertEqual(self.handler.response_status, 200)
+        
+        self.handler.path = "/api/settings"
+        self.handler._api_get_settings()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data["theme"], "light")
+        self.assertEqual(self.handler.response_data["zoom"], 14)
+        self.assertEqual(self.handler.response_data["starred_items"], [{"name": "Starred File", "path": "termux_home/starred.md", "isDir": False}])
+        self.assertEqual(self.handler.response_data["recent_files"], [{"name": "Recent File", "path": "termux_home/recent.md"}])
+
+
 
 
     def test_cleanup_temp_files_logs_to_stderr(self):
@@ -417,6 +519,122 @@ class TestAPI(unittest.TestCase):
         test_file = self.test_dir / "fat32_test.txt"
         atomic_write(test_file, "fat32 content")
         self.assertEqual(test_file.read_text("utf-8"), "fat32 content")
+
+    def test_save_settings_write_failure(self):
+        payload = json.dumps({"theme": "light"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        with patch("backend.routes_settings.atomic_write", side_effect=OSError("Write failed")):
+            self.handler._api_save_settings()
+        self.assertEqual(self.handler.response_status, 500)
+        self.assertIn("Failed to save settings", self.handler.response_data["error"])
+
+    def test_missing_content_length_header(self):
+        payload = json.dumps({"path": "test.md", "content": "hello"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {}
+        self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 400)
+        self.assertIn("Missing required key", self.handler.response_data["error"])
+
+    def test_protected_path_deletion_and_rename(self):
+        modie_dir = self.test_dir / ".modie"
+        modie_dir.mkdir(exist_ok=True)
+        default_md = modie_dir / "default.md"
+        atomic_write(default_md, "test content")
+
+        self.handler._resolve_and_validate = lambda p: (self.test_dir / p).resolve()
+
+        payload = json.dumps({"path": ".modie"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_delete_item()
+        self.assertEqual(self.handler.response_status, 403)
+        self.assertIn("Cannot modify system configuration directory", self.handler.response_data["error"])
+
+        payload = json.dumps({"path": ".modie/default.md"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_delete_item()
+        self.assertEqual(self.handler.response_status, 403)
+        self.assertIn("Cannot modify system configuration directory", self.handler.response_data["error"])
+
+        payload = json.dumps({"path": ".modie", "new_path": "new_modie"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_rename_item()
+        self.assertEqual(self.handler.response_status, 403)
+        self.assertIn("Cannot rename or move system configuration directory", self.handler.response_data["error"])
+
+        payload = json.dumps({"path": "test.md", "new_path": ".modie/test.md"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_rename_item()
+        self.assertEqual(self.handler.response_status, 403)
+        self.assertIn("Cannot rename or move system configuration directory", self.handler.response_data["error"])
+
+    def test_watcher_thread_pool_limit(self):
+        import threading
+        import time
+        from unittest.mock import MagicMock
+        from backend.routes_watch import WATCHER_REGISTRY, MAX_WATCHERS, WATCHER_LOCK
+
+        with WATCHER_LOCK:
+            WATCHER_REGISTRY.clear()
+
+        handlers = []
+        threads = []
+        
+        for i in range(MAX_WATCHERS + 2):
+            h = TestableEditorHandler()
+            h._resolve_and_validate = lambda p: (self.test_dir / p).resolve()
+            h.path = "/api/watch?path=test.md"
+            h.query_params = {"path": "test.md"}
+            
+            mock_conn = MagicMock()
+            h.connection = mock_conn
+            h.wfile = MagicMock()
+            h.send_response = MagicMock()
+            h.send_header = MagicMock()
+            h.end_headers = MagicMock()
+            
+            handlers.append(h)
+
+        # Use an Event to hold the threads alive while we verify the registry,
+        # then set the event to let them exit cleanly without delay.
+        exit_event = threading.Event()
+        def mock_sleep(secs):
+            exit_event.wait(2.0)
+
+        with patch("backend.routes_watch.select.select", return_value=([], [], [])), \
+             patch("backend.routes_watch.time.sleep", side_effect=mock_sleep):
+            
+            for h in handlers:
+                t = threading.Thread(target=h._api_watch_file)
+                t.daemon = True
+                t.start()
+                threads.append(t)
+                time.sleep(0.005)
+
+            time.sleep(0.05)
+
+            try:
+                with WATCHER_LOCK:
+                    reg_size = len(WATCHER_REGISTRY)
+                self.assertEqual(reg_size, MAX_WATCHERS)
+
+                handlers[0].connection.close.assert_called()
+                handlers[1].connection.close.assert_called()
+                
+                with WATCHER_LOCK:
+                    self.assertNotIn(handlers[0], WATCHER_REGISTRY)
+                    self.assertNotIn(handlers[1], WATCHER_REGISTRY)
+                    self.assertIn(handlers[2], WATCHER_REGISTRY)
+                    self.assertIn(handlers[MAX_WATCHERS + 1], WATCHER_REGISTRY)
+            finally:
+                exit_event.set()
+                for t in threads:
+                    t.join(0.1)
 
 
 if __name__ == "__main__":

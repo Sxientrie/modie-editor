@@ -19,6 +19,17 @@ export async function loadDirectory(ctx, path = '', append = false, offset = 0) 
         const limit = 100;
         const data = await apiGet('/api/browser', { path, show_hidden: showHidden, show_all: showAll, limit, offset }, { ctx });
         ctx.state.currentPath = data.currentPath;
+        const pathBar = document.querySelector('.browser-path-bar');
+        if (pathBar) {
+            pathBar.style.display = data.currentPath === "" ? "none" : "flex";
+        }
+        if (!ctx.state.isBacking && !append) {
+            if (history.state === null || history.state.type === undefined) {
+                history.replaceState({ type: 'directory', path: data.currentPath }, '');
+            } else if (history.state.type === 'directory' && history.state.path !== data.currentPath) {
+                history.pushState({ type: 'directory', path: data.currentPath }, '');
+            }
+        }
         
         if (!append) {
             const breadcrumbsEl = document.querySelector('#browserBreadcrumbs');
@@ -41,6 +52,123 @@ export async function loadDirectory(ctx, path = '', append = false, offset = 0) 
                 });
                 breadcrumbsEl.innerHTML = html;
             }
+        }
+
+        if (!append && data.currentPath === "") {
+            let storageHtml = '';
+            if (data.storage) {
+                storageHtml = `
+                    <div class="dashboard-section-title"><i data-lucide="database"></i> Storage statistics</div>
+                    <div class="storage-grid">
+                `;
+                const mounts = [
+                    { key: 'storage_shared', name: 'Internal Storage', badge: 'Internal' },
+                    { key: 'storage_external', name: 'SD Card', badge: 'SD Card' }
+                ];
+                mounts.forEach(m => {
+                    const stats = data.storage[m.key];
+                    if (stats) {
+                        const pct = Math.round((stats.used / stats.total) * 100);
+                        let barClass = 'low-use';
+                        if (pct >= 95) barClass = 'full-use';
+                        else if (pct >= 80) barClass = 'high-use';
+                        else if (pct >= 50) barClass = 'mid-use';
+
+                        storageHtml += `
+                            <div class="storage-card">
+                                <div class="storage-card-header">
+                                    <span class="storage-card-title">${m.name}</span>
+                                    <span class="storage-card-badge">${m.badge}</span>
+                                </div>
+                                <div class="storage-progress-container">
+                                    <div class="storage-progress-bar ${barClass}" style="width: ${pct}%"></div>
+                                </div>
+                                <div class="storage-card-meta">
+                                    <span>${pct}% Used</span>
+                                    <span>${ctx.formatBytes(stats.free)} free of ${ctx.formatBytes(stats.total)}</span>
+                                </div>
+                            </div>
+                        `;
+                    }
+                });
+                storageHtml += '</div>';
+            }
+
+            const starredItems = ctx.state.starredItems || [];
+            let starredHtml = `
+                <div class="dashboard-section-title" style="margin-top: 8px;"><i data-lucide="star"></i> Starred Items</div>
+            `;
+            if (starredItems.length === 0) {
+                starredHtml += `<div class="dashboard-list-empty">No starred items. Long-press any file or folder to star it.</div>`;
+            } else {
+                starredHtml += `
+                    <div class="dashboard-list">
+                        ${starredItems.map(item => {
+                            const iconType = item.isDir ? 'folder' : 'file';
+                            const iconName = item.isDir ? 'folder' : 'file-text';
+                            const meta = item.isDir ? 'Starred Folder' : 'Starred File';
+                            return `
+                                <div class="browser-item" data-path="${escapeHtml(item.path)}" data-is-dir="${item.isDir}">
+                                    <div class="browser-item-icon" data-type="${iconType}"><i data-lucide="${iconName}"></i></div>
+                                    <div class="browser-item-info">
+                                        <span class="browser-item-name">${escapeHtml(item.name)}</span>
+                                        <span class="browser-item-meta">${meta}</span>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
+
+            const recentFiles = ctx.state.recentFiles || [];
+            let recentHtml = `
+                <div class="dashboard-section-title" style="margin-top: 8px;"><i data-lucide="clock"></i> Recent Files</div>
+            `;
+            if (recentFiles.length === 0) {
+                recentHtml += `<div class="dashboard-list-empty">No recently opened files.</div>`;
+            } else {
+                recentHtml += `
+                    <div class="dashboard-list">
+                        ${recentFiles.map(item => `
+                            <div class="browser-item" data-path="${escapeHtml(item.path)}" data-is-dir="false">
+                                <div class="browser-item-icon" data-type="file"><i data-lucide="file-text"></i></div>
+                                <div class="browser-item-info">
+                                    <span class="browser-item-name">${escapeHtml(item.name)}</span>
+                                    <span class="browser-item-meta" style="word-break: break-all;">${escapeHtml(item.path)}</span>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            let rootsHtml = `
+                <div class="dashboard-section-title" style="margin-top: 8px;"><i data-lucide="folder-open"></i> Workspace Roots</div>
+                <div class="dashboard-list">
+                    ${data.items.map(item => `
+                        <div class="browser-item" data-path="${escapeHtml(item.path)}" data-is-dir="true">
+                            <div class="browser-item-icon" data-type="folder"><i data-lucide="folder"></i></div>
+                            <div class="browser-item-info">
+                                <span class="browser-item-name">${escapeHtml(item.name)}</span>
+                                <span class="browser-item-meta">Workspace directory</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+
+            list.innerHTML = `
+                <div class="dashboard-container">
+                    ${storageHtml}
+                    ${starredHtml}
+                    ${recentHtml}
+                    ${rootsHtml}
+                </div>
+            `;
+            window.lucide.createIcons({ nodes: [list] });
+            ctx.setStatus('saved', 'Workspace loaded');
+            return;
         }
 
         if (!append && data.items.length === 0) {

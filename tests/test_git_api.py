@@ -140,6 +140,23 @@ class TestGitAPI(unittest.TestCase):
         self.assertEqual(data["staged"][0]["status"], "R")
         self.assertEqual(data["untracked"][0], "arrow -> file.txt")
 
+    @patch("backend.routes_git.GitRoutesMixin._find_git_root")
+    @patch("backend.routes_git.GitRoutesMixin._run_git")
+    def test_git_commit_missing_identity(self, mock_run_git, mock_find_git_root):
+        repo_dir = self.test_dir / "termux_home"
+        repo_dir.mkdir(exist_ok=True)
+        mock_find_git_root.return_value = repo_dir
+        mock_run_git.return_value = (1, "", "Please tell me who you are")
+        
+        payload = json.dumps({"path": "termux_home", "message": "initial commit"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_git_commit()
+        
+        self.assertEqual(self.handler.response_status, 400)
+        self.assertIn("Git identity not configured", self.handler.response_data["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

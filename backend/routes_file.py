@@ -1,6 +1,7 @@
 import os
 import secrets
 import shutil
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -117,6 +118,9 @@ self.addEventListener("fetch", (e) => {
     def _api_save_content(self):
         file_param = self.request_data["path"]
         content = self.request_data["content"]
+        if not isinstance(file_param, str) or not isinstance(content, str):
+            self._send_json({"error": "Invalid payload types: 'path' and 'content' must be strings"}, 400)
+            return
         try:
             file_path = self._resolve_and_validate(file_param) if file_param else config.DEFAULT_MD_PATH
         except PermissionError as e:
@@ -193,6 +197,9 @@ self.addEventListener("fetch", (e) => {
     @validate_json(["paths"])
     def _api_verify_drafts(self):
         paths = self.request_data["paths"]
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            self._send_json({"error": "Invalid payload: 'paths' must be a list of strings"}, 400)
+            return
         missing = []
         for p in paths:
             try:

@@ -3,6 +3,7 @@
     --font-sans: 'Inter', -apple-system, system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace, monospace;
     --radius: 8px;
+    --radius-md: 8px;
     --radius-sm: 6px;
     --transition: 150ms ease;
 }

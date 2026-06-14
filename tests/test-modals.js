@@ -94,22 +94,11 @@ async function runTests() {
     // Import app.js dynamically so it executes within our mocked environment
     const appModule = await import('../static/js/app.js');
 
-    // Extract the functions from global scope or the window context if they are registered there,
-    // or we can test the logic directly by calling the exported functions or using the global ctx
-    // Wait, let's see how showConfirm/showPrompt are exposed.
-    // In app.js they are defined as function showConfirm and function showPrompt.
-    // Let's copy the behavior and test it using history mock.
-    
     // Test 1: showConfirm when no modal is open (should push state)
     historyStack.length = 0;
     global.history.state = null;
     
-    // Simulate opening confirm modal when no other modal is active
-    if (global.history.state && global.history.state.modal) {
-        global.history.replaceState({ modal: 'genericConfirmModal' }, '');
-    } else {
-        global.history.pushState({ modal: 'genericConfirmModal' }, '');
-    }
+    appModule.showConfirm('Confirm Title', 'Confirm Message');
     
     assert.strictEqual(historyStack.length, 1);
     assert.strictEqual(global.history.state.modal, 'genericConfirmModal');
@@ -121,12 +110,8 @@ async function runTests() {
     assert.strictEqual(historyStack.length, 1);
     assert.strictEqual(global.history.state.modal, 'contextMenuModal');
     
-    // Now simulate transitioning to genericPromptModal
-    if (global.history.state && global.history.state.modal) {
-        global.history.replaceState({ modal: 'genericPromptModal' }, '');
-    } else {
-        global.history.pushState({ modal: 'genericPromptModal' }, '');
-    }
+    // Call showPrompt, which should replace the history state rather than push
+    appModule.showPrompt('Prompt Title', 'Prompt Message');
     
     // The history stack length should STILL be 1 because it replaced the state instead of pushing!
     assert.strictEqual(historyStack.length, 1);

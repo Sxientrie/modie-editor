@@ -5,7 +5,7 @@ import { updateActiveHeading, toggleOutline, populateOutline } from './ui-outlin
 export { toggleOutline, populateOutline, updateActiveHeading };
 
 const THEME_KEY = 'modie_theme';
-const ZOOM_MIN = 12, ZOOM_MAX = 28, ZOOM_STEP = 2, ZOOM_DEFAULT = 14;
+const ZOOM_MIN = 8, ZOOM_MAX = 48, ZOOM_STEP = 2, ZOOM_DEFAULT = 14;
 const ZOOM_KEY = 'modie_zoom';
 const DENSITY_KEY = 'modie_density';
 
@@ -77,7 +77,8 @@ export function updateDirtyState(ctx) {
 export function formatBytes(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(1) + ' GB';
 }
 let lastLineCount = 0;
 let lastLineNumbersText = '';
@@ -180,15 +181,20 @@ export function toggleSettings(ctx) {
     if (!drawer || !overlay) return;
     const outlineDrawer = document.querySelector('#outlineDrawer');
     if (outlineDrawer) outlineDrawer.classList.remove('active');
-    const active = drawer.classList.toggle('active');
-    overlay.classList.toggle('active', active);
-    if (active) {
-        populateSettings(ctx);
-        history.pushState({ drawer: 'settings' }, '');
-    } else {
+    
+    const currentlyActive = drawer.classList.contains('active');
+    if (currentlyActive) {
         if (history.state && history.state.drawer === 'settings') {
             history.back();
+        } else {
+            drawer.classList.remove('active');
+            overlay.classList.remove('active');
         }
+    } else {
+        drawer.classList.add('active');
+        overlay.classList.add('active');
+        populateSettings(ctx);
+        history.pushState({ drawer: 'settings' }, '');
     }
 }
 export function populateSettings(ctx) {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "modie-e8198ecc";
+const CACHE_NAME = "modie-92c6bb2b";
 const ASSETS = [
     "/",
     "/static/index.html",

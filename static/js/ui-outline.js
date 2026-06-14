@@ -3,16 +3,19 @@ export function toggleOutline(ctx) {
     const overlay = document.querySelector('#drawerOverlay');
     if (!drawer || !overlay) return;
     
-    const active = drawer.classList.toggle('active');
-    overlay.classList.toggle('active', active);
-    
-    if (active) {
-        populateOutline(ctx);
-        history.pushState({ drawer: 'outline' }, '');
-    } else {
+    const currentlyActive = drawer.classList.contains('active');
+    if (currentlyActive) {
         if (history.state && history.state.drawer === 'outline') {
             history.back();
+        } else {
+            drawer.classList.remove('active');
+            overlay.classList.remove('active');
         }
+    } else {
+        drawer.classList.add('active');
+        overlay.classList.add('active');
+        populateOutline(ctx);
+        history.pushState({ drawer: 'outline' }, '');
     }
 }
 

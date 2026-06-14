@@ -1,6 +1,7 @@
 import os
 import secrets
 import shutil
+import sys
 import threading
 import uuid
 from datetime import datetime
@@ -21,6 +22,13 @@ _MAX_REPLACE_FILES = 500
 
 _MAX_REPLACE_FILE_SIZE = 10 * 1024 * 1024
 
+def _get_disk_usage(path):
+    try:
+        total, used, free = shutil.disk_usage(path)
+        return {"total": total, "used": used, "free": free}
+    except Exception:
+        return None
+
 class BrowserRoutesMixin:
 
     @get_route("/api/browser")
@@ -30,20 +38,37 @@ class BrowserRoutesMixin:
         show_hidden = params.get("show_hidden", ["false"])[0].lower() == "true"
         show_all = params.get("show_all", ["false"])[0].lower() == "true"
         if dir_param == "":
+            sandbox_root, shared_root = config.get_roots()
+            sdcard_root = config.get_sdcard_root()
+            storage_data = {
+                "storage_shared": _get_disk_usage(shared_root)
+            }
+            if sdcard_root:
+                storage_data["storage_external"] = _get_disk_usage(sdcard_root)
+
+            items = [
+                {
+                    "name": "Termux Home (~)",
+                    "isDir": True,
+                    "path": "termux_home"
+                },
+                {
+                    "name": "Internal Storage (storage)",
+                    "isDir": True,
+                    "path": "storage_shared"
+                }
+            ]
+            if sdcard_root:
+                items.append({
+                    "name": "SD Card",
+                    "isDir": True,
+                    "path": "storage_external"
+                })
+
             self._send_json({
                 "currentPath": "",
-                "items": [
-                    {
-                        "name": "Termux Home (~)",
-                        "isDir": True,
-                        "path": "termux_home"
-                    },
-                    {
-                        "name": "Shared Storage (storage)",
-                        "isDir": True,
-                        "path": "storage_shared"
-                    }
-                ]
+                "storage": storage_data,
+                "items": items
             })
             return
         try:
@@ -87,7 +112,6 @@ class BrowserRoutesMixin:
             self._send_json({"error": f"Failed to list directory: {e}"}, 500)
             return
             
-        # Sort DirEntry list by directory type and then alphabetically
         entries.sort(key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower()))
         total_count = len(entries)
         paginated_entries = entries[offset_val : offset_val + limit_val]
@@ -163,6 +187,9 @@ class BrowserRoutesMixin:
         except PermissionError as e:
             self._send_json({"error": str(e)}, 403)
             return
+        if self._is_protected_path(target_path):
+            self._send_json({"error": "Permission denied: Cannot modify system configuration directory"}, 403)
+            return
         sandbox_root, shared_root = config.get_roots()
         if target_path in (sandbox_root, shared_root):
             # Safeguard to prevent recursive deletion of home directory or shared storage roots
@@ -195,6 +222,9 @@ class BrowserRoutesMixin:
             dest_path = self._resolve_and_validate(new_path_str)
         except PermissionError as e:
             self._send_json({"error": str(e)}, 403)
+            return
+        if self._is_protected_path(src_path) or self._is_protected_path(dest_path):
+            self._send_json({"error": "Permission denied: Cannot rename or move system configuration directory"}, 403)
             return
         sandbox_root, shared_root = config.get_roots()
         if src_path in (sandbox_root, shared_root) or dest_path in (sandbox_root, shared_root):

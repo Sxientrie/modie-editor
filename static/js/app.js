@@ -7,7 +7,7 @@ import { setupContextMenu } from './contextmenu.js';
 import { initWatch, startWatching, stopWatching } from './watch.js';
 import { initTabs, renderTabs, saveCurrentTabState, switchToFile, closeTab, openFile, closeFile } from './tabs.js';
 import { initSettingsModule, syncSettingsToServer, initSettings } from './settings.js';
-import { setupBrowser } from './api-browser.js';
+import { setupBrowser } from './browser.js';
 import { setupFind } from './ui-find.js';
 import { setupOutline, toggleOutline } from './ui-outline.js';
 import { setupGlobalReplace } from './ui-replace.js';
@@ -22,14 +22,20 @@ const subscribe = (fn) => { listeners.push(fn); return () => { const i = listene
 
 const makeDeepProxy = (obj, handler) => {
     if (typeof obj !== 'object' || obj === null) return obj;
-    for (let k in obj) { if (typeof obj[k] === 'object' && obj[k] !== null) obj[k] = makeDeepProxy(obj[k], handler); }
+    if (obj.__isProxy) return obj;
+    for (let k in obj) { if (typeof obj[k] === 'object' && obj[k] !== null && !obj[k].__isProxy) obj[k] = makeDeepProxy(obj[k], handler); }
     return new Proxy(obj, handler);
 };
 
 const stateHandler = {
+    get(target, prop, receiver) {
+        if (prop === '__isProxy') return true;
+        return Reflect.get(target, prop, receiver);
+    },
     set(target, prop, value) {
         if (target[prop] === value) return true;
-        target[prop] = (typeof value === 'object' && value !== null) ? makeDeepProxy(value, stateHandler) : value;
+        /* Avoid double proxying by checking if value is already a proxy to prevent cumulative memory and access latency overheads. */
+        target[prop] = (typeof value === 'object' && value !== null && !value.__isProxy) ? makeDeepProxy(value, stateHandler) : value;
         listeners.forEach(fn => { try { fn(prop, value, target); } catch (e) {} });
         return true;
     }
@@ -64,7 +70,11 @@ function showConfirm(title, message) {
         const modal = $('#genericConfirmModal'), titleEl = $('#genericConfirmTitle'), textEl = $('#genericConfirmText');
         const btnCancel = $('#btnGenericConfirmCancel'), btnConfirm = $('#btnGenericConfirmConfirm');
         titleEl.textContent = title; textEl.textContent = message; modal.classList.add('active');
-        history.pushState({ modal: 'genericConfirmModal' }, '');
+        if (history.state && history.state.modal) {
+            history.replaceState({ modal: 'genericConfirmModal' }, '');
+        } else {
+            history.pushState({ modal: 'genericConfirmModal' }, '');
+        }
         const cleanup = (res) => {
             modal.classList.remove('active');
             btnCancel.removeEventListener('click', onCancel);
@@ -85,7 +95,12 @@ function showPrompt(title, message, defaultValue = '') {
         const modal = $('#genericPromptModal'), titleEl = $('#genericPromptTitle'), textEl = $('#genericPromptText');
         const inputEl = $('#genericPromptInput'), btnCancel = $('#btnGenericPromptCancel'), btnConfirm = $('#btnGenericPromptConfirm');
         titleEl.textContent = title; textEl.textContent = message; inputEl.value = defaultValue;
-        modal.classList.add('active'); history.pushState({ modal: 'genericPromptModal' }, '');
+        modal.classList.add('active');
+        if (history.state && history.state.modal) {
+            history.replaceState({ modal: 'genericPromptModal' }, '');
+        } else {
+            history.pushState({ modal: 'genericPromptModal' }, '');
+        }
         setTimeout(() => inputEl.focus(), 100);
         const cleanup = (res) => {
             modal.classList.remove('active');
@@ -220,9 +235,28 @@ function closeActiveModal() {
         'aboutModal', 'previewBackupModal', 'externalChangeModal',
         'restoreModal', 'diffModal', 'draftModal'
     ];
+    const closeButtons = {
+        'contextMenuModal': '#btnContextCancel',
+        'restoreModal': '#btnRestoreCancel',
+        'diffModal': '#btnDiffCancel',
+        'genericConfirmModal': '#btnGenericConfirmCancel',
+        'genericPromptModal': '#btnGenericPromptCancel',
+        'aboutModal': '#btnAboutClose',
+        'previewBackupModal': '#btnPreviewBackupClose',
+        'externalChangeModal': '#btnExternalChangeKeep'
+    };
     for (const id of modalIds) {
         const m = $('#' + id);
         if (m && m.classList.contains('active')) {
+            const btnSelector = closeButtons[id];
+            if (btnSelector) {
+                const btn = $(btnSelector);
+                if (btn) {
+                    // Use mapped cancel/close buttons to trigger associated lifecycle cleanups
+                    btn.click();
+                    return true;
+                }
+            }
             m.classList.remove('active');
             return true;
         }

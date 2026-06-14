@@ -32,6 +32,10 @@ function lcsLength(A, B, reverse = false) {
     return curr;
 }
 
+// Architectural decision: Hirschberg's algorithm is selected over standard Myers diff to compute
+// line-by-line differences in linear space complexity O(min(M, N)). This prevents memory exhaustion
+// on large files in Termux. It splits the search space using a recursive divide-and-conquer strategy
+// combined with dynamic programming LCS length checks.
 function hirschberg(A, B) {
     if (A.length === 0) {
         return B.map(x => ({ type: 'added', text: x }));

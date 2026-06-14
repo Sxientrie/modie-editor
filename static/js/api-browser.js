@@ -1,44 +1,49 @@
 import { escapeHtml } from './utils.js';
 import { apiGet } from './api-client.js';
 
-export async function loadDirectory(ctx, path = '') {
+export async function loadDirectory(ctx, path = '', append = false, offset = 0) {
     const list = document.querySelector('#browserList');
     if (!list) return;
     try {
         ctx.setStatus('loading', 'Loading files...');
-        const filterInput = document.querySelector('#browserFilterInput');
-        if (filterInput) filterInput.value = '';
-        const filterBar = document.querySelector('#browserFilterBar');
-        if (filterBar) filterBar.classList.remove('active');
-        const toggleBtn = document.querySelector('#btnBrowserFilterToggle');
-        if (toggleBtn) toggleBtn.classList.remove('active');
+        if (!append) {
+            const filterInput = document.querySelector('#browserFilterInput');
+            if (filterInput) filterInput.value = '';
+            const filterBar = document.querySelector('#browserFilterBar');
+            if (filterBar) filterBar.classList.remove('active');
+            const toggleBtn = document.querySelector('#btnBrowserFilterToggle');
+            if (toggleBtn) toggleBtn.classList.remove('active');
+        }
         const showHidden = localStorage.getItem('show_hidden') === 'true';
         const showAll = localStorage.getItem('show_all') === 'true';
-        const data = await apiGet('/api/browser', { path, show_hidden: showHidden, show_all: showAll }, { ctx });
+        const limit = 100;
+        const data = await apiGet('/api/browser', { path, show_hidden: showHidden, show_all: showAll, limit, offset }, { ctx });
         ctx.state.currentPath = data.currentPath;
         
-        const breadcrumbsEl = document.querySelector('#browserBreadcrumbs');
-        if (breadcrumbsEl) {
-            const parts = data.currentPath ? data.currentPath.split('/') : [];
-            let currentAccumulated = '';
-            const isHomeActive = parts.length === 0;
-            let html = `<span class="breadcrumb-item${isHomeActive ? ' active' : ''}" data-path="">Home</span>`;
-            parts.forEach((p, idx) => {
-                currentAccumulated += (idx === 0 ? '' : '/') + p;
-                let displayName = p;
-                if (p === 'termux_home') displayName = 'Termux Home';
-                else if (p === 'storage_shared') displayName = 'Shared Storage';
-                const isLast = idx === parts.length - 1;
-                if (isLast) {
-                    html += ` <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item active" data-path="${escapeHtml(currentAccumulated)}">${escapeHtml(displayName)}</span>`;
-                } else {
-                    html += ` <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item" data-path="${escapeHtml(currentAccumulated)}">${escapeHtml(displayName)}</span>`;
-                }
-            });
-            breadcrumbsEl.innerHTML = html;
+        if (!append) {
+            const breadcrumbsEl = document.querySelector('#browserBreadcrumbs');
+            if (breadcrumbsEl) {
+                const parts = data.currentPath ? data.currentPath.split('/') : [];
+                let currentAccumulated = '';
+                const isHomeActive = parts.length === 0;
+                let html = `<span class="breadcrumb-item${isHomeActive ? ' active' : ''}" data-path="">Home</span>`;
+                parts.forEach((p, idx) => {
+                    currentAccumulated += (idx === 0 ? '' : '/') + p;
+                    let displayName = p;
+                    if (p === 'termux_home') displayName = 'Termux Home';
+                    else if (p === 'storage_shared') displayName = 'Shared Storage';
+                    const isLast = idx === parts.length - 1;
+                    if (isLast) {
+                        html += ` <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item active" data-path="${escapeHtml(currentAccumulated)}">${escapeHtml(displayName)}</span>`;
+                    } else {
+                        html += ` <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item" data-path="${escapeHtml(currentAccumulated)}">${escapeHtml(displayName)}</span>`;
+                    }
+                });
+                breadcrumbsEl.innerHTML = html;
+            }
         }
 
-        if (data.items.length === 0) {
+        if (!append && data.items.length === 0) {
             list.innerHTML = `
                 <div class="empty-state">
                     <i data-lucide="folder-open"></i>
@@ -48,11 +53,14 @@ export async function loadDirectory(ctx, path = '') {
             ctx.setStatus('saved', 'Empty directory');
             return;
         }
-        
-        list.innerHTML = data.items.map(item => {
+
+        const oldLoadMore = list.querySelector('.browser-load-more');
+        if (oldLoadMore) oldLoadMore.remove();
+
+        const itemsHtml = data.items.map(item => {
             const iconType = item.isDir ? 'folder' : 'file';
             const iconName = item.isDir ? 'folder' : 'file-text';
-            const meta = item.isDir ? 'Folder' : `${ctx.formatBytes(item.size)} \u00b7 ${new Date(item.modified).toLocaleString()}`;
+            const meta = item.isDir ? `Folder \u00b7 ${new Date(item.modified).toLocaleString()}` : `${ctx.formatBytes(item.size)} \u00b7 ${new Date(item.modified).toLocaleString()}`;
             return `
                 <div class="browser-item" data-path="${escapeHtml(item.path)}" data-is-dir="${item.isDir}">
                     <div class="browser-item-icon" data-type="${iconType}"><i data-lucide="${iconName}"></i></div>
@@ -63,10 +71,41 @@ export async function loadDirectory(ctx, path = '') {
                 </div>
             `;
         }).join('');
+
+        if (append) {
+            list.insertAdjacentHTML('beforeend', itemsHtml);
+        } else {
+            list.innerHTML = itemsHtml;
+        }
+
+        const currentTotalLoaded = offset + data.items.length;
+        if (data.total_count && data.total_count > currentTotalLoaded) {
+            const nextOffset = currentTotalLoaded;
+            const loadMoreHtml = `
+                <div class="browser-load-more" style="padding: 12px; display: flex; justify-content: center; width: 100%;">
+                    <button class="btn btn-sm btn-ghost" id="btnBrowserLoadMore" data-path="${escapeHtml(data.currentPath)}" data-offset="${nextOffset}">Load More (${data.total_count - currentTotalLoaded} remaining)</button>
+                </div>`;
+            list.insertAdjacentHTML('beforeend', loadMoreHtml);
+            
+            const btnLoadMore = list.querySelector('#btnBrowserLoadMore');
+            if (btnLoadMore) {
+                btnLoadMore.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const pathVal = btnLoadMore.dataset.path;
+                    const offsetVal = parseInt(btnLoadMore.dataset.offset, 10);
+                    loadDirectory(ctx, pathVal, true, offsetVal);
+                });
+            }
+        }
+
         window.lucide.createIcons({ nodes: [list] });
-        ctx.setStatus('saved', 'Files loaded');
+        ctx.setStatus('saved', `Files loaded (${currentTotalLoaded}/${data.total_count || currentTotalLoaded})`);
     } catch (err) {
-        list.innerHTML = `<div class="empty-state"><p style="color:var(--destructive)">Failed to load files: ${escapeHtml(err.message)}</p></div>`;
+        if (!append) {
+            list.innerHTML = `<div class="empty-state"><p style="color:var(--destructive)">Failed to load files: ${escapeHtml(err.message)}</p></div>`;
+        } else {
+            ctx.toast(`Failed to load more files: ${err.message}`, 'error');
+        }
         ctx.setStatus('error', 'Directory load failed');
     }
 }
@@ -178,123 +217,3 @@ export async function searchFiles(ctx, query, path, caseSensitive, isRegex) {
     }
 }
 
-export function setupBrowser(ctx, state) {
-    const $ = (s) => document.querySelector(s);
-    const btnMore = $('#btnBrowserMore'), dropdown = $('#browserMoreDropdown');
-    if (btnMore && dropdown) {
-        btnMore.addEventListener('click', (e) => { e.stopPropagation(); dropdown.style.display = dropdown.style.display === 'flex' ? 'none' : 'flex'; });
-        document.addEventListener('click', (e) => { if (!dropdown.contains(e.target) && e.target !== btnMore && !btnMore.contains(e.target)) dropdown.style.display = 'none'; });
-        dropdown.querySelectorAll('.menu-item').forEach(item => item.addEventListener('click', () => dropdown.style.display = 'none'));
-    }
-    $('#browserList').addEventListener('click', (e) => {
-        const item = e.target.closest('.browser-item');
-        if (item) {
-            const path = item.dataset.path;
-            const isDir = item.dataset.isDir === 'true';
-            const line = item.dataset.line;
-            if (isDir) {
-                loadDirectory(ctx, path);
-            } else {
-                ctx.openFile(path).then(() => {
-                    if (line) {
-                        const lineNum = parseInt(line, 10);
-                        const lines = ctx.editor.value.split('\n');
-                        let charIndex = 0;
-                        for (let i = 0; i < Math.min(lineNum - 1, lines.length); i++) charIndex += lines[i].length + 1;
-                        ctx.editor.focus();
-                        ctx.editor.setSelectionRange(charIndex, charIndex);
-                        const lh = parseFloat(getComputedStyle(ctx.editor).lineHeight);
-                        ctx.editor.scrollTop = (lineNum - 3) * lh;
-                    }
-                });
-            }
-        }
-    });
-    $('#backupList').addEventListener('click', (e) => {
-        const btnRestore = e.target.closest('.btn-restore');
-        if (btnRestore) {
-            const name = btnRestore.dataset.name;
-            state.pendingRestore = name;
-            $('#restoreModalText').textContent = `Restore "${name}"? Current content will be backed up before the restore.`;
-            $('#restoreModal').classList.add('active');
-            history.pushState({ modal: 'restoreModal' }, '');
-            return;
-        }
-        const btnPreview = e.target.closest('.btn-preview-backup');
-        if (btnPreview && state.activeFilePath) {
-            const name = btnPreview.dataset.name;
-            loadBackupContent(ctx, name, state.activeFilePath).then((content) => {
-                if (content !== null) {
-                    state.currentBackupContent = content;
-                    $('#previewBackupTitle').textContent = `Preview: ${name}`;
-                    const contentEl = $('#previewBackupContent');
-                    contentEl.className = 'markdown-body rendered-mode';
-                    contentEl.innerHTML = ctx.renderMarkdown(content);
-                    $('#btnToggleBackupFormat').textContent = 'Show Raw';
-                    $('#btnPreviewBackupRestore').dataset.name = name;
-                    $('#previewBackupModal').classList.add('active');
-                    history.pushState({ modal: 'previewBackupModal' }, '');
-                }
-            }).catch(() => {});
-        }
-    });
-    $('#btnToggleBackupFormat').addEventListener('click', () => {
-        const contentEl = $('#previewBackupContent');
-        const isRaw = contentEl.classList.toggle('raw-mode');
-        if (isRaw) {
-            contentEl.classList.remove('markdown-body', 'rendered-mode');
-            contentEl.textContent = state.currentBackupContent;
-            $('#btnToggleBackupFormat').textContent = 'Show Rendered';
-        } else {
-            contentEl.classList.remove('raw-mode');
-            contentEl.classList.add('markdown-body', 'rendered-mode');
-            contentEl.innerHTML = ctx.renderMarkdown(state.currentBackupContent);
-            $('#btnToggleBackupFormat').textContent = 'Show Raw';
-        }
-    });
-    $('#btnPreviewBackupClose').addEventListener('click', () => {
-        $('#previewBackupModal').classList.remove('active');
-        if (history.state && history.state.modal === 'previewBackupModal') history.back();
-    });
-    $('#previewBackupModal').addEventListener('click', (e) => {
-        if (e.target === $('#previewBackupModal')) {
-            $('#previewBackupModal').classList.remove('active');
-            if (history.state && history.state.modal === 'previewBackupModal') history.back();
-        }
-    });
-    $('#btnPreviewBackupRestore').addEventListener('click', (e) => {
-        const name = e.target.dataset.name;
-        $('#previewBackupModal').classList.remove('active');
-        if (history.state && history.state.modal === 'previewBackupModal') history.back();
-        state.pendingRestore = name;
-        $('#restoreModalText').textContent = `Restore "${name}"? Current content will be backed up before the restore.`;
-        $('#restoreModal').classList.add('active');
-        history.pushState({ modal: 'restoreModal' }, '');
-    });
-    $('#btnDraftRestore').addEventListener('click', () => {
-        if (state.activeFilePath) {
-            const raw = localStorage.getItem(`modie_draft_${state.activeFilePath}`);
-            let content = null;
-            if (raw) {
-                try {
-                    const draft = JSON.parse(raw);
-                    if (draft.path === state.activeFilePath) content = draft.content;
-                } catch (e) {}
-            }
-            if (content !== null) {
-                ctx.editor.value = content;
-                import('./ui.js').then((uiMod) => {
-                    uiMod.updateLineNumbers(ctx); uiMod.updateDirtyState(ctx);
-                    if (ctx.updateWordCount) ctx.updateWordCount();
-                });
-            }
-        }
-        $('#draftModal').classList.remove('active');
-        if (history.state && history.state.modal === 'draftModal') history.back();
-    });
-    $('#btnDraftDiscard').addEventListener('click', () => {
-        import('./ui.js').then((uiMod) => uiMod.clearDraft(ctx));
-        $('#draftModal').classList.remove('active');
-        if (history.state && history.state.modal === 'draftModal') history.back();
-    });
-}

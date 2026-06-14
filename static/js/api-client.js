@@ -63,7 +63,11 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
 async function requestWithRetry(method, path, body = null, opts = {}) {
     const ctx = opts.ctx;
     const timeout = opts.timeout || (method === 'POST' ? 30000 : 8000);
-    const maxRetries = method === 'GET' ? (opts.maxRetries ?? 2) : 0;
+    // Automatic retries are disabled specifically for /api/content POST requests to prevent
+    // false conflict (409) errors if the server successfully writes the file before timing out.
+    // Other requests are allowed to retry on transient network drops.
+    const isSaveContent = method === 'POST' && (path === '/api/content' || path.startsWith('/api/content?') || path.endsWith('/api/content'));
+    const maxRetries = isSaveContent ? 0 : (opts.maxRetries ?? 2);
     
     let url = path;
     if (method === 'GET' && body) {
@@ -110,7 +114,7 @@ async function requestWithRetry(method, path, body = null, opts = {}) {
                 apiErr = new ApiError(err.message || 'Network error', 'network');
             }
             
-            if (method === 'POST') {
+            if (attempt >= maxRetries && method === 'POST') {
                 triggerRequestError(apiErr, path, body, opts);
             }
             

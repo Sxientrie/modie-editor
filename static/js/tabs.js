@@ -229,9 +229,21 @@ export async function restoreWorkspace(workspace) {
     if (paths.length === 0) return false;
     
     let activeFileFound = false;
-    for (const fileInfo of workspace.openFiles) {
+    const loadPromises = workspace.openFiles.map(async (fileInfo) => {
         try {
             const data = await apiGet('/api/content', { path: fileInfo.path }, { ctx });
+            return { fileInfo, data, success: true };
+        } catch (err) {
+            console.error(`Failed to restore file ${fileInfo.path}`, err);
+            return { fileInfo, success: false };
+        }
+    });
+    
+    const results = await Promise.all(loadPromises);
+    
+    for (const res of results) {
+        if (res.success) {
+            const { fileInfo, data } = res;
             state.openFiles[fileInfo.path] = {
                 path: fileInfo.path,
                 content: data.content,
@@ -246,8 +258,6 @@ export async function restoreWorkspace(workspace) {
             if (fileInfo.path === workspace.activeFilePath) {
                 activeFileFound = true;
             }
-        } catch (err) {
-            console.error(`Failed to restore file ${fileInfo.path}`, err);
         }
     }
     

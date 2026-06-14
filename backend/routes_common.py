@@ -1,9 +1,6 @@
 import json
 import sys
 from urllib.parse import urlparse, parse_qs
-import importlib
-import inspect
-from pathlib import Path
 
 GET_ROUTES = {}
 POST_ROUTES = {}
@@ -29,24 +26,6 @@ def post_route(path, require_auth=True):
         }
         return func
     return decorator
-
-
-def discover_routes():
-    mixins = []
-    current_dir = Path(__file__).parent
-    for p in sorted(current_dir.glob("routes_*.py")):
-        if p.stem == "routes_common":
-            continue
-        try:
-            mod = importlib.import_module(f"backend.{p.stem}")
-        except Exception as e:
-            print(f"Warning: Failed to import {p.stem}: {e}", file=sys.stderr)
-            continue
-        for name, cls in inspect.getmembers(mod, inspect.isclass):
-            if cls.__module__ == mod.__name__ and name.endswith("Mixin"):
-                mixins.append(cls)
-    return mixins
-
 
 def validate_json(required_keys=None):
     if required_keys is None:

@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
-def atomic_write(target_path, content, encoding="utf-8"):
+def atomic_write(target_path, content, encoding="utf-8", perms=None):
     target_path = Path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.parent / f"{target_path.name}.{secrets.token_hex(4)}.tmp"
@@ -13,13 +13,26 @@ def atomic_write(target_path, content, encoding="utf-8"):
             mode = "wb"
         else:
             mode = "w"
-        with open(temp_path, mode, encoding=None if isinstance(content, bytes) else encoding) as f:
+        
+        if perms is not None:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            if hasattr(os, "O_BINARY") and isinstance(content, bytes):
+                flags |= os.O_BINARY
+            fd = os.open(temp_path, flags, perms)
+            f = os.fdopen(fd, mode, encoding=None if isinstance(content, bytes) else encoding)
+        else:
+            f = open(temp_path, mode, encoding=None if isinstance(content, bytes) else encoding)
+
+        try:
             f.write(content)
             f.flush()
             try:
                 os.fsync(f.fileno())
             except OSError:
                 pass
+        finally:
+            f.close()
+
         os.replace(temp_path, target_path)
     finally:
         if temp_path.exists():
@@ -33,14 +46,14 @@ def create_backup(file_path, backup_dir, prefix):
 
     if not file_path.exists():
         return None
-    backup_dir = Path(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    b_dir = Path(backup_dir)
+    # Raise any write/permission errors directly instead of falling back to the target file's parent directory, avoiding workspace clutter.
+    b_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"{prefix}_{ts}{file_path.suffix or '.md'}"
-    backup_path = backup_dir / backup_name
-    try:
-        content = file_path.read_bytes()
-        atomic_write(backup_path, content)
-    except Exception:
-        return None
+    backup_path = b_dir / backup_name
+    content = file_path.read_bytes()
+    atomic_write(backup_path, content)
     return backup_path
+

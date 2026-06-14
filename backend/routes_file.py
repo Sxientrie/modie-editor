@@ -27,18 +27,23 @@ class FileRoutesMixin:
             <script>
             (function() {
                 console.log("[MODiE Dev] Hot-Reload client active");
+                let currentBootId = null;
                 const devWatch = new EventSource("/api/dev-watch");
                 devWatch.onmessage = function(e) {
-                    if (e.data === "reload") {
+                    if (e.data.startsWith("boot_")) {
+                        const newBootId = e.data.substring(5);
+                        if (currentBootId && currentBootId !== newBootId) {
+                            console.log("[MODiE Dev] Server restarted. Reloading...");
+                            window.location.reload();
+                        }
+                        currentBootId = newBootId;
+                    } else if (e.data === "reload") {
                         console.log("[MODiE Dev] Asset changed. Reloading...");
                         setTimeout(() => window.location.reload(), 100);
                     }
                 };
                 devWatch.onerror = function() {
-                    devWatch.close();
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
+                    // Let EventSource automatically reconnect; only reload if the server restarts.
                 };
             })();
             </script>
@@ -127,27 +132,78 @@ self.addEventListener("fetch", (e) => {
                         if incoming_modified != disk_mtime_iso:
                             try:
                                 incoming_ts = datetime.fromisoformat(incoming_modified).timestamp()
-                                if abs(incoming_ts - disk_mtime) > 0.002:
+                                sandbox_root, shared_root = config.get_roots()
+                                try:
+                                    file_path.relative_to(shared_root)
+                                    # Emulated SD card storage (exFAT/FAT32) uses 1-2s timestamp resolution.
+                                    # We allow disk_mtime to be older due to truncation (up to 2.0s),
+                                    # but flag a conflict if disk_mtime is newer (> 0.002s) indicating another write.
+                                    is_conflict = (disk_mtime - incoming_ts > 0.002) or (incoming_ts - disk_mtime > 2.0)
+                                except ValueError:
+                                    # Internal Termux home ext4 storage uses millisecond resolution
+                                    is_conflict = abs(incoming_ts - disk_mtime) > 0.002
+                                if is_conflict:
+                                    try:
+                                        if file_path.read_text("utf-8", errors="ignore") == content:
+                                            is_conflict = False
+                                    except Exception:
+                                        pass
+                                if is_conflict:
                                     self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
                                     return
                             except (ValueError, OSError):
-                                self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
-                                return
+                                try:
+                                    if file_path.read_text("utf-8", errors="ignore") == content:
+                                        pass
+                                    else:
+                                        self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
+                                        return
+                                except Exception:
+                                    self._send_json({"error": "Conflict: File has been modified on disk"}, 409)
+                                    return
                     except OSError:
                         pass
+                backup_warning = None
                 if file_path.exists():
                     prefix = self._get_backup_prefix(file_path)
-                    create_backup(file_path, config.BACKUP_DIR, prefix)
-                    max_count, max_age = get_backup_settings()
-                    cleanup_backups(file_path, prefix, max_count, max_age)
+                    try:
+                        create_backup(file_path, config.BACKUP_DIR, prefix)
+                        max_count, max_age = get_backup_settings()
+                        cleanup_backups(file_path, prefix, max_count, max_age)
+                    except Exception as backup_err:
+                        # Log the backup failure to stderr and capture it as a warning so file save does not fail completely.
+                        sys.stderr.write(f"Backup warning for {file_path}: {backup_err}\n")
+                        backup_warning = f"Backup failed: {backup_err}"
                     with config.LAST_SAVE_LOCK:
                         config.LAST_SAVE_TIMES[str(file_path.resolve())] = time.time()
                     config.prune_last_save_times()
                 atomic_write(file_path, content)
                 stat = file_path.stat()
                 new_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
-                self._send_json({"ok": True, "modified": new_mtime, "size": stat.st_size})
+                response_data = {"ok": True, "modified": new_mtime, "size": stat.st_size}
+                if backup_warning:
+                    response_data["warning"] = backup_warning
+                self._send_json(response_data)
             except PermissionError:
                 self._send_json({"error": "Permission denied: Cannot write to this file"}, 403)
             except Exception as e:
                 self._send_json({"error": f"Failed to save file: {e}"}, 500)
+
+    @post_route("/api/verify-drafts")
+    @validate_json(["paths"])
+    def _api_verify_drafts(self):
+        paths = self.request_data["paths"]
+        missing = []
+        for p in paths:
+            try:
+                resolved = self._resolve_and_validate(p)
+                if not resolved.exists() or not resolved.is_file():
+                    missing.append(p)
+            except FileNotFoundError:
+                missing.append(p)
+            except Exception:
+                # Architectural constraint: do not mark file as missing if we cannot access
+                # or validate it due to a transient permission or system/device mounting error.
+                # This protects users from losing their local drafts in localStorage.
+                pass
+        self._send_json({"missing": missing})

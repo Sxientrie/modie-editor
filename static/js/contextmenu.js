@@ -82,38 +82,11 @@ export function setupContextMenu(ctx, state, api, ui) {
         browserListEl.addEventListener('click', (e) => {
             if (ignoreNextClick) {
                 ignoreNextClick = false;
-                return;
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                e.preventDefault();
             }
-            const item = e.target.closest('.browser-item');
-            if (item) {
-                const path = item.dataset.path;
-                const isDir = item.dataset.isDir === 'true';
-                if (item.classList.contains('search-result-item')) {
-                    const line = parseInt(item.dataset.line, 10);
-                    ctx.openFile(path).then(() => {
-                        setTimeout(() => {
-                            const val = ctx.editor.value;
-                            const lines = val.split('\n');
-                            let charIndex = 0;
-                            for (let i = 0; i < Math.min(line - 1, lines.length); i++) {
-                                charIndex += lines[i].length + 1;
-                            }
-                            ctx.editor.focus();
-                            ctx.editor.setSelectionRange(charIndex, charIndex);
-                            const lh = parseFloat(getComputedStyle(ctx.editor).lineHeight);
-                            ctx.editor.scrollTop = Math.max(0, (line - 4) * lh);
-                            ctx.updateCursorPos();
-                        }, 120);
-                    }).catch(() => {});
-                    return;
-                }
-                if (isDir) {
-                    api.loadDirectory(ctx, path);
-                } else {
-                    ctx.openFile(path);
-                }
-            }
-        });
+        }, true);
     }
 
     function safeAddListener(selector, event, handler) {
@@ -187,16 +160,20 @@ export function setupContextMenu(ctx, state, api, ui) {
         if (ctx.renderTabs) ctx.renderTabs();
     }
 
-    const closeContextMenu = () => {
+    const closeContextMenu = (isTransitioning = false) => {
         const modalEl = $('#contextMenuModal');
         if (modalEl) {
             modalEl.classList.remove('active');
-            if (history.state && history.state.modal === 'contextMenuModal') history.back();
+            if (!isTransitioning && history.state && history.state.modal === 'contextMenuModal') {
+                history.back();
+            }
         }
+        // Reset click interception flag to avoid locking out future folder list clicks
+        ignoreNextClick = false;
     };
 
     safeAddListener('#btnContextRename', 'click', async () => {
-        closeContextMenu();
+        closeContextMenu(true);
         const item = state.contextItem;
         if (!item) return;
         const parts = item.path.split('/');
@@ -213,7 +190,7 @@ export function setupContextMenu(ctx, state, api, ui) {
     });
 
     safeAddListener('#btnContextMove', 'click', async () => {
-        closeContextMenu();
+        closeContextMenu(true);
         const item = state.contextItem;
         if (!item) return;
         const newPath = await ctx.showPrompt('Move', `Move "${item.name}" to new path:`, item.path);
@@ -237,7 +214,7 @@ export function setupContextMenu(ctx, state, api, ui) {
     });
 
     safeAddListener('#btnContextDelete', 'click', async () => {
-        closeContextMenu();
+        closeContextMenu(true);
         const item = state.contextItem;
         if (!item) return;
         const del = await ctx.showConfirm('Delete Item', `Delete this ${item.isDir ? 'folder' : 'file'}?`);

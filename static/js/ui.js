@@ -24,14 +24,31 @@ export function applyDensity(density) {
     }
     localStorage.setItem(DENSITY_KEY, density);
 }
+const activeToasts = new Map();
+
 export function toast(message, type = 'info') {
     const container = document.querySelector('#toastContainer');
     if (!container) return;
+    const now = Date.now();
+    const key = `${message}:${type}`;
+    if (activeToasts.has(key)) {
+        const lastTime = activeToasts.get(key);
+        /* Prevent duplicate identical toasts triggered simultaneously within 500ms due to touch event bubbling or duplicate listener execution. */
+        if (now - lastTime < 500) {
+            return;
+        }
+    }
+    activeToasts.set(key, now);
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.innerHTML = `<span class="toast-dot"></span>${escapeHtml(message)}`;
     container.appendChild(el);
-    setTimeout(() => el.remove(), 3000);
+    setTimeout(() => {
+        el.remove();
+        if (activeToasts.get(key) === now) {
+            activeToasts.delete(key);
+        }
+    }, 3000);
 }
 export function setStatus(status, text) {
     const statusDot = document.querySelector('#statusDot');
@@ -278,4 +295,31 @@ export function setupPreviewCheckboxSync(ctx) {
             }
         }
     });
+}
+
+export async function cleanupOrphanDrafts(ctx) {
+    const draftKeys = [];
+    const paths = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('modie_draft_')) {
+            const path = key.substring(12);
+            if (path) {
+                draftKeys.push(key);
+                paths.push(path);
+            }
+        }
+    }
+    if (paths.length === 0) return;
+    try {
+        const { apiPost } = await import('./api-client.js');
+        const res = await apiPost('/api/verify-drafts', { paths }, { ctx });
+        if (res && Array.isArray(res.missing)) {
+            res.missing.forEach(p => {
+                localStorage.removeItem(`modie_draft_${p}`);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to cleanup drafts', e);
+    }
 }

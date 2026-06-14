@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import os
 import re
 from pathlib import Path
@@ -8,9 +9,24 @@ from .file_ops import atomic_write
 
 def is_binary(file_path):
     try:
+        mime, _ = mimetypes.guess_type(str(file_path))
+        if mime:
+            if mime.startswith("text/") or mime in ("application/json", "application/javascript", "image/svg+xml"):
+                return False
+            if mime.startswith("image/") or mime.startswith("audio/") or mime.startswith("video/") or mime.startswith("application/"):
+                return True
         with open(file_path, "rb") as f:
             chunk = f.read(1024)
-            return b"\x00" in chunk
+            if not chunk:
+                return False
+            if chunk.startswith((b"\xff\xfe", b"\xfe\xff")):
+                return False
+            if b"\x00" in chunk:
+                return True
+            control_chars = sum(1 for byte in chunk if byte < 32 and byte not in (9, 10, 13))
+            if control_chars / len(chunk) > 0.30:
+                return True
+            return False
     except Exception:
         return True
 
@@ -75,6 +91,8 @@ class SettingsRoutesMixin:
         path_str = self.query_params["path"]
         case_sensitive = self.query_params.get("case_sensitive", "false").lower() == "true"
         is_regex = self.query_params.get("regex", "false").lower() == "true"
+        pattern = None
+        query_clean = None
         if not query:
             self._send_json({"results": []})
             return
@@ -118,58 +136,106 @@ class SettingsRoutesMixin:
             show_all = settings_data.get("show_all", False)
         else:
             show_all = show_all == "true"
-        results = []
-        sandbox_root, shared_root = config.get_roots()
-        limit = 200
-        count = 0
-        for root, dirs, files in os.walk(dir_path):
-            if not show_hidden:
-                dirs[:] = [d for d in dirs if not d.startswith('.') and d != ".modie" and d not in ignored_dirs]
-            else:
-                dirs[:] = [d for d in dirs if d != ".modie" and d not in ignored_dirs]
-            for file in files:
-                if (not show_hidden and file.startswith(".")) or file.endswith(".tmp"):
-                    continue
-                ext = Path(file).suffix.lower()
-                if not show_all and ext not in (".md", ".txt", ".js", ".css", ".html", ".json"):
-                    continue
-                file_path = Path(root) / file
-                try:
-                    stat = file_path.stat()
-                    if stat.st_size > 1 * 1024 * 1024:
-                        continue
-                    if is_binary(file_path):
-                        continue
-                    content = file_path.read_text("utf-8", errors="ignore")
-                except Exception:
-                    continue
-                lines = content.splitlines()
-                for idx, line in enumerate(lines):
+        import threading
+        import time
+        import select
+        import socket
 
-                    matched = bool(pattern.search(line)) if is_regex else (query_clean in (line if case_sensitive else line.lower()))
-                    if matched:
-                        rel_path = None
+        results = []
+        status = {"done": False, "error": None, "cancel": False}
+
+        def run_search_thread():
+            try:
+                sandbox_root, shared_root = config.get_roots()
+                limit = 200
+                count = 0
+                file_counter = 0
+                for root, dirs, files in os.walk(dir_path):
+                    if status["cancel"]:
+                        break
+                    if not show_hidden:
+                        dirs[:] = [d for d in dirs if not d.startswith('.') and d != ".modie" and d not in ignored_dirs]
+                    else:
+                        dirs[:] = [d for d in dirs if d != ".modie" and d not in ignored_dirs]
+                    for file in files:
+                        if status["cancel"]:
+                            break
+                        file_counter += 1
+                        if file_counter % 50 == 0:
+                            time.sleep(0.002)
+                        if (not show_hidden and file.startswith(".")) or file.endswith(".tmp"):
+                            continue
+                        ext = Path(file).suffix.lower()
+                        if not show_all and ext not in (".md", ".txt", ".js", ".css", ".html", ".json"):
+                            continue
+                        file_path = Path(root) / file
                         try:
-                            rel = file_path.relative_to(sandbox_root)
-                            rel_path = "termux_home/" + str(rel) if str(rel) != "." else "termux_home"
-                        except ValueError:
-                            try:
-                                rel = file_path.relative_to(shared_root)
-                                rel_path = "storage_shared/" + str(rel) if str(rel) != "." else "storage_shared"
-                            except ValueError:
-                                pass
-                        if rel_path:
-                            results.append({
-                                "path": rel_path,
-                                "filename": file,
-                                "line": idx + 1,
-                                "text": line.strip()[:100]
-                            })
-                            count += 1
-                            if count >= limit:
-                                break
-                if count >= limit:
+                            stat = file_path.stat()
+                            if stat.st_size > 1 * 1024 * 1024:
+                                continue
+                            if is_binary(file_path):
+                                continue
+                            content = file_path.read_text("utf-8", errors="ignore")
+                        except Exception:
+                            continue
+                        lines = content.splitlines()
+                        for idx, line in enumerate(lines):
+                            matched = bool(pattern.search(line)) if is_regex else (query_clean in (line if case_sensitive else line.lower()))
+                            if matched:
+                                rel_path = None
+                                try:
+                                    rel = file_path.relative_to(sandbox_root)
+                                    rel_path = "termux_home/" + str(rel) if str(rel) != "." else "termux_home"
+                                except ValueError:
+                                    try:
+                                        rel = file_path.relative_to(shared_root)
+                                        rel_path = "storage_shared/" + str(rel) if str(rel) != "." else "storage_shared"
+                                    except ValueError:
+                                        pass
+                                if rel_path:
+                                    results.append({
+                                        "path": rel_path,
+                                        "filename": file,
+                                        "line": idx + 1,
+                                        "text": line.strip()[:100]
+                                    })
+                                    count += 1
+                                    if count >= limit:
+                                        break
+                        if count >= limit:
+                            break
+                    if count >= limit:
+                        break
+            except Exception as e:
+                status["error"] = str(e)
+            finally:
+                status["done"] = True
+
+        # Run recursive directory search on a background thread to prevent blocking request connection thread
+        t = threading.Thread(target=run_search_thread, daemon=True)
+        t.start()
+
+        while not status["done"]:
+            time.sleep(0.01)
+            # Check if client connection has disconnected to abort the background search thread immediately
+            if hasattr(self, "connection") and self.connection is not None:
+                try:
+                    r, _, _ = select.select([self.connection], [], [], 0)
+                    if r:
+                        # Architectural decision: Any readability (new data or EOF) on a GET request
+                        # socket indicates the client has either disconnected or reused the socket
+                        # for a new request. In either case, the current search is cancelled.
+                        status["cancel"] = True
+                        break
+                except Exception:
+                    status["cancel"] = True
                     break
-            if count >= limit:
-                break
+
+        if status["cancel"]:
+            return
+
+        if status["error"]:
+            self._send_json({"error": status["error"]}, 500)
+            return
+
         self._send_json({"results": results})

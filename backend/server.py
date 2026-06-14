@@ -12,7 +12,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from .routes_common import GET_ROUTES, POST_ROUTES, discover_routes
+from .routes_common import GET_ROUTES, POST_ROUTES
+from .routes_backup import BackupRoutesMixin
+from .routes_browser import BrowserRoutesMixin
+from .routes_file import FileRoutesMixin
+from .routes_git import GitRoutesMixin
+from .routes_settings import SettingsRoutesMixin
+from .routes_watch import WatchRoutesMixin
 from . import config
 
 def check_static_changed(last_state):
@@ -57,21 +63,44 @@ class ThreadLimitedHTTPServer(LimitThreadPoolMixIn, socketserver.ThreadingMixIn,
 
 
 def cleanup_temp_files():
-    try:
-        modie_dir = (Path.home() / ".modie").resolve()
-        if not config.is_in_sandbox(modie_dir):
-            return
-        if not modie_dir.exists():
-            return
-        for f in modie_dir.glob("*.tmp"):
-            resolved_f = f.resolve()
-            if config.is_in_sandbox(resolved_f):
-                try:
-                    resolved_f.unlink()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    def bg_cleanup():
+        # Architecture decision: Run cleanup on a background thread to avoid blocking server boot.
+        try:
+            sandbox_root, shared_root = config.get_roots()
+            temp_pattern = re.compile(r"^.*\.[0-9a-f]{8}\.tmp$")
+            
+            # Recursively purge in Termux home sandbox root (typically smaller and faster to walk)
+            if sandbox_root.exists():
+                for p in sandbox_root.rglob("*.tmp"):
+                    if temp_pattern.match(p.name):
+                        try:
+                            p.unlink()
+                        except Exception as e:
+                            sys.stderr.write(f"Failed to delete temp file {p}: {e}\n")
+            
+            # Scan top-level and first-level directories in shared storage to avoid walking Android data folders
+            if shared_root.exists():
+                for p in shared_root.glob("*.tmp"):
+                    if temp_pattern.match(p.name):
+                        try:
+                            p.unlink()
+                        except Exception as e:
+                            sys.stderr.write(f"Failed to delete temp file {p}: {e}\n")
+                for sub in shared_root.iterdir():
+                    try:
+                        if sub.is_dir() and not sub.name.startswith("."):
+                            for p in sub.glob("*.tmp"):
+                                if temp_pattern.match(p.name):
+                                    try:
+                                        p.unlink()
+                                    except Exception as e:
+                                        sys.stderr.write(f"Failed to delete temp file {p}: {e}\n")
+                    except Exception:
+                        pass
+        except Exception as e:
+            sys.stderr.write(f"Temp file cleanup error: {e}\n")
+            
+    threading.Thread(target=bg_cleanup, daemon=True).start()
 
 class BaseEditorHandler(BaseHTTPRequestHandler):
 
@@ -105,7 +134,12 @@ class BaseEditorHandler(BaseHTTPRequestHandler):
             h = hashlib.sha256(str(rel).encode("utf-8")).hexdigest()[:8]
             return f"MODIE_{h}"
         except Exception:
-            return "MODIE_generic"
+            try:
+                h = hashlib.sha256(str(file_path.resolve()).encode("utf-8")).hexdigest()[:8]
+                return f"MODIE_{h}"
+            except Exception:
+                return "MODIE_generic"
+
 
     def _check_auth(self):
         token = self.headers.get("X-Editor-Token")
@@ -120,7 +154,9 @@ class BaseEditorHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         message = format % args
         message = re.sub(r"token=[a-zA-Z0-9]+", "token=[REDACTED]", message)
-        sys.stderr.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+        # Security constraint: Sanitize control characters and non-printable characters to prevent log injection.
+        sanitized = "".join(c if (32 <= ord(c) <= 126) else f"\\x{ord(c):02x}" for c in message)
+        sys.stderr.write(f"[{datetime.now().strftime('%H:%M:%S')}] {sanitized}\n")
 
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode("utf-8")
@@ -224,8 +260,17 @@ class BaseEditorHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, f"Server Error: {e}")
 
-mixins = discover_routes()
-EditorHandler = type("EditorHandler", tuple(mixins) + (BaseEditorHandler,), {})
+# Statically declare EditorHandler with explicit mixins to enable static analysis, auto-completion, and direct route visibility without dynamic reflection.
+class EditorHandler(
+    BackupRoutesMixin,
+    BrowserRoutesMixin,
+    FileRoutesMixin,
+    GitRoutesMixin,
+    SettingsRoutesMixin,
+    WatchRoutesMixin,
+    BaseEditorHandler
+):
+    pass
 
 def main():
     config.init_config()

@@ -14,6 +14,21 @@ _MAX_COMMIT_MSG_LEN = 4096
 
 class GitRoutesMixin:
 
+    # Platform quirk workaround: Git status output (porcelain format) wraps non-ASCII paths in quotes
+    # and escapes bytes using octal notation (e.g., "\303\251"). We decode these sequences to original
+    # bytes using Latin-1 and then decode them as UTF-8.
+    def _unescape_git_path(self, path_str):
+        path_str = path_str.strip()
+        if path_str.startswith('"') and path_str.endswith('"'):
+            try:
+                import codecs
+                escaped_bytes = path_str[1:-1].encode('latin1')
+                unescaped_bytes, _ = codecs.escape_decode(escaped_bytes)
+                return unescaped_bytes.decode('utf-8')
+            except Exception:
+                return path_str.strip('"')
+        return path_str
+
     def _find_git_root(self, target_path):
         if target_path.is_file():
             curr = target_path.parent
@@ -91,11 +106,12 @@ class GitRoutesMixin:
             y = line[1]
 
 
-            raw_path = line[3:].strip('"')
-            if " -> " in raw_path:
-                filepath = raw_path.split(" -> ", 1)[1].strip('"')
+            raw_path = line[3:]
+            if (x in ('R', 'C') or y in ('R', 'C')) and " -> " in raw_path:
+                parts = raw_path.split(" -> ", 1)
+                filepath = self._unescape_git_path(parts[1])
             else:
-                filepath = raw_path
+                filepath = self._unescape_git_path(raw_path)
 
             if x == '?' and y == '?':
                 untracked.append(filepath)

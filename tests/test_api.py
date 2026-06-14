@@ -2,7 +2,6 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.environ["MODIE_TESTING"] = "1"
 import unittest
 from unittest.mock import patch
 import json
@@ -57,6 +56,13 @@ class TestAPI(unittest.TestCase):
         self.sandbox_patch.stop()
         shutil.rmtree(self.test_dir)
 
+    def test_token_permissions(self):
+        from backend import config
+        token_path = config.TOKEN_FILE
+        self.assertTrue(token_path.exists())
+        mode = token_path.stat().st_mode
+        self.assertEqual(mode & 0o077, 0)
+
     def test_get_content_empty(self):
         self.handler.path = "/api/content?path=test.md"
         self.handler._api_get_content()
@@ -75,6 +81,37 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(self.handler.response_data["content"], "Hello World")
         self.assertEqual(self.handler.response_data["size"], len("Hello World"))
 
+    def test_save_idempotent_conflict_bypass(self):
+        payload = json.dumps({"path": "test.md", "content": "Hello World"}).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 200)
+        
+        import time
+        from datetime import datetime
+        older_ts = datetime.fromtimestamp(time.time() - 3600).isoformat()
+        payload2 = json.dumps({
+            "path": "test.md",
+            "content": "Hello World",
+            "modified": older_ts
+        }).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload2)
+        self.handler.headers = {"Content-Length": str(len(payload2))}
+        self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertTrue(self.handler.response_data["ok"])
+        
+        payload3 = json.dumps({
+            "path": "test.md",
+            "content": "Changed Content",
+            "modified": older_ts
+        }).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload3)
+        self.handler.headers = {"Content-Length": str(len(payload3))}
+        self.handler._api_save_content()
+        self.assertEqual(self.handler.response_status, 409)
+
     def test_directory_listing(self):
         (self.test_dir / "termux_home").mkdir()
         (self.test_dir / "termux_home" / "dir1").mkdir()
@@ -87,6 +124,29 @@ class TestAPI(unittest.TestCase):
         names = [f["name"] for f in items]
         self.assertIn("dir1", names)
         self.assertIn("test.md", names)
+
+    def test_directory_listing_pagination(self):
+        (self.test_dir / "termux_home").mkdir()
+        (self.test_dir / "termux_home" / "dir1").mkdir()
+        atomic_write(self.test_dir / "termux_home" / "test.md", "Hello")
+        
+        self.handler.path = "/api/browser?path=termux_home&limit=-10&offset=-5"
+        self.handler._api_list_directory()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(len(self.handler.response_data["items"]), 0)
+        self.assertEqual(self.handler.response_data["limit"], 0)
+        self.assertEqual(self.handler.response_data["offset"], 0)
+
+        self.handler.path = "/api/browser?path=termux_home&limit=invalid&offset=abc"
+        self.handler._api_list_directory()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data["limit"], 100)
+        self.assertEqual(self.handler.response_data["offset"], 0)
+
+        self.handler.path = f"/api/browser?path=termux_home&limit={'9'*5000}&offset=0"
+        self.handler._api_list_directory()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data["limit"], 100)
 
     def test_search_and_replace(self):
         f1 = self.test_dir / "file1.md"
@@ -103,6 +163,21 @@ class TestAPI(unittest.TestCase):
         self.handler.rfile = io.BytesIO(payload)
         self.handler.headers = {"Content-Length": str(len(payload))}
         self.handler._api_replace_files()
+        self.assertEqual(self.handler.response_status, 200)
+        
+        import time
+        from backend.routes_browser import REPLACE_TASKS, REPLACE_TASKS_LOCK
+        
+        task_id = self.handler.response_data["task_id"]
+        for _ in range(50):
+            with REPLACE_TASKS_LOCK:
+                task = REPLACE_TASKS.get(task_id)
+            if task and task.get("status") == "done":
+                break
+            time.sleep(0.02)
+            
+        self.handler.path = f"/api/replace/status?task_id={task_id}"
+        self.handler._api_replace_status()
         self.assertEqual(self.handler.response_status, 200)
         self.assertEqual(self.handler.response_data["replaced_files"], 2)
         self.assertEqual(f1.read_text("utf-8"), "I like orange")
@@ -139,6 +214,25 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(backup_path.exists())
         self.assertEqual(backup_path.read_text("utf-8"), "source content")
         self.assertEqual(backup_path.parent, backup_dir)
+
+    @patch("backend.file_ops.atomic_write", side_effect=OSError("Disk full"))
+    def test_file_ops_create_backup_failure(self, mock_atomic_write):
+        from backend.file_ops import create_backup
+        test_file = self.test_dir / "source.txt"
+        atomic_write(test_file, "source content")
+        bad_backup_dir = self.test_dir / "bad_backups"
+        with self.assertRaises(Exception):
+            create_backup(test_file, bad_backup_dir, "MODIE_test")
+
+    def test_file_ops_create_backup_no_fallback(self):
+        from backend.file_ops import create_backup
+        test_file = self.test_dir / "source.txt"
+        atomic_write(test_file, "source content")
+        bad_backup_dir = self.test_dir / "bad_backups"
+        bad_backup_dir.touch()
+        with self.assertRaises(Exception):
+            create_backup(test_file, bad_backup_dir, "MODIE_test")
+
 
     def test_route_discovery(self):
         from backend.routes_common import GET_ROUTES, POST_ROUTES
@@ -240,6 +334,90 @@ class TestAPI(unittest.TestCase):
         self.handler._serve_sw()
         self.assertEqual(self.handler.response_status, 200)
         self.assertTrue(len(self.handler.wfile.getvalue()) > 0)
+
+    def test_verify_drafts(self):
+        atomic_write(self.test_dir / "exists.md", "Content")
+        payload = json.dumps({
+            "paths": ["exists.md", "missing.md"]
+        }).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_verify_drafts()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data, {"missing": ["missing.md"]})
+
+    def test_verify_drafts_exception_safety(self):
+        def mock_resolve(p):
+            raise PermissionError("Permission denied")
+        self.handler._resolve_and_validate = mock_resolve
+        payload = json.dumps({
+            "paths": ["restricted.md"]
+        }).encode("utf-8")
+        self.handler.rfile = io.BytesIO(payload)
+        self.handler.headers = {"Content-Length": str(len(payload))}
+        self.handler._api_verify_drafts()
+        self.assertEqual(self.handler.response_status, 200)
+        self.assertEqual(self.handler.response_data, {"missing": []})
+
+
+
+    def test_cleanup_temp_files_logs_to_stderr(self):
+        from backend.server import cleanup_temp_files
+        modie_dir = self.test_dir / ".modie"
+        modie_dir.mkdir(parents=True, exist_ok=True)
+        # Use a filename matching the pattern r"^.*\.[0-9a-f]{8}\.tmp$"
+        temp_file = modie_dir / "test_temp.12345678.tmp"
+        temp_file.touch()
+
+        import io
+        from unittest.mock import patch, MagicMock
+        
+        stderr_capture = io.StringIO()
+        
+        # Mock threading.Thread to run the target synchronously in test environment
+        def mock_thread_init(target, *args, **kwargs):
+            mock_thread = MagicMock()
+            mock_thread.start = lambda: target()
+            return mock_thread
+
+        with patch("threading.Thread", side_effect=mock_thread_init), \
+             patch.object(Path, "unlink", side_effect=OSError("Permission denied")), \
+             patch("sys.stderr", stderr_capture):
+            cleanup_temp_files()
+            
+        output = stderr_capture.getvalue()
+        # Verify it raises and prints permission error context
+        self.assertIn("Failed to delete temp file", output)
+        self.assertIn("Permission denied", output)
+
+    def test_resolve_and_validate_android_paths(self):
+        real_handler = TestableEditorHandler()
+        with patch("backend.config.get_roots") as mock_roots:
+            termux_home = (self.test_dir / "home").resolve()
+            storage_shared = (self.test_dir / "storage").resolve()
+            termux_home.mkdir(exist_ok=True)
+            storage_shared.mkdir(exist_ok=True)
+            mock_roots.return_value = (termux_home, storage_shared)
+            
+            p1 = real_handler._resolve_and_validate("termux_home/notes.md")
+            self.assertEqual(p1, termux_home / "notes.md")
+            
+            p2 = real_handler._resolve_and_validate("storage_shared/pictures/photo.png")
+            self.assertEqual(p2, storage_shared / "pictures" / "photo.png")
+            
+            with self.assertRaises(PermissionError):
+                real_handler._resolve_and_validate("termux_home/../outside.txt")
+                
+            with self.assertRaises(PermissionError):
+                real_handler._resolve_and_validate("storage_shared/../../outside.txt")
+
+    @patch("os.fsync")
+    def test_atomic_write_fat32_behavior(self, mock_fsync):
+        mock_fsync.side_effect = OSError("Operation not permitted")
+        test_file = self.test_dir / "fat32_test.txt"
+        atomic_write(test_file, "fat32 content")
+        self.assertEqual(test_file.read_text("utf-8"), "fat32 content")
+
 
 if __name__ == "__main__":
     unittest.main()

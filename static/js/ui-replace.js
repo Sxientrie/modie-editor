@@ -1,4 +1,4 @@
-import { apiPost } from './api-client.js';
+import { apiGet, apiPost } from './api-client.js';
 
 export function setupGlobalReplace(ctx) {
     const btnReplaceAll = document.querySelector('#btnGlobalReplaceAll');
@@ -30,15 +30,40 @@ export function setupGlobalReplace(ctx) {
                 case_sensitive: ctx.state.globalSearchCaseSensitive,
                 is_regex: ctx.state.globalSearchRegex
             }, { ctx });
-            if (data.ok) {
-                ctx.toast(`Successfully replaced in ${data.replaced_files} file(s)`, 'success');
-                document.querySelector('#globalReplaceInput').value = '';
-                const searchInput = document.querySelector('#globalSearchInput');
-                if (searchInput) {
-                    searchInput.dispatchEvent(new Event('input'));
-                }
+            if (data.ok && data.task_id) {
+                const taskId = data.task_id;
+                const poll = async () => {
+                    try {
+                        const statusData = await apiGet('/api/replace/status', { task_id: taskId }, { ctx });
+                        if (statusData.status === 'done') {
+                            ctx.setStatus('saved', 'Replace complete');
+                            ctx.toast(`Successfully replaced in ${statusData.replaced_files} file(s)`, 'success');
+                            // Architectural decision: Warn the user if backup or write errors occurred in the background task
+                            // so edits are not silently applied without backups.
+                            if (statusData.errors && statusData.errors.length > 0) {
+                                ctx.toast(`Replace warning: ${statusData.errors.length} error(s)/warning(s) occurred. Check browser console.`, 'warning');
+                                statusData.errors.forEach(err => console.warn('[Global Replace Warning]', err));
+                            }
+                            document.querySelector('#globalReplaceInput').value = '';
+                            const searchInput = document.querySelector('#globalSearchInput');
+                            if (searchInput) {
+                                searchInput.dispatchEvent(new Event('input'));
+                            }
+                        } else if (statusData.status === 'running') {
+                            setTimeout(poll, 500);
+                        } else {
+                            ctx.setStatus('error', 'Replace failed');
+                            ctx.toast('Replace failed', 'error');
+                        }
+                    } catch (pollErr) {
+                        ctx.setStatus('error', 'Replace failed');
+                        ctx.toast(`Replace failed: ${pollErr.message}`, 'error');
+                    }
+                };
+                setTimeout(poll, 500);
             } else {
-                ctx.toast('Replace failed', 'error');
+                ctx.setStatus('error', 'Replace failed');
+                ctx.toast('Replace failed to initialize', 'error');
             }
         } catch (err) {
             if (err.code !== 'auth') {
@@ -48,3 +73,4 @@ export function setupGlobalReplace(ctx) {
         }
     });
 }
+

@@ -1,4 +1,4 @@
-const CACHE_NAME = "modie-067c893a";
+const CACHE_NAME = "modie-e8198ecc";
 const ASSETS = [
     "/",
     "/static/index.html",
@@ -19,6 +19,7 @@ const ASSETS = [
     "/static/js/api.js",
     "/static/js/api-browser-ops.js",
     "/static/js/api-browser.js",
+    "/static/js/browser.js",
     "/static/js/api-git.js",
     "/static/js/ui-diff.js",
     "/static/js/ui-find.js",

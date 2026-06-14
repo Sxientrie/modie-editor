@@ -16,7 +16,7 @@ def cleanup_backups(file_path, prefix, max_per_file, max_age_days):
     if not config.BACKUP_DIR.exists():
         return
     ext = file_path.suffix or ".md"
-    backup_pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}_\d{{6}}{re.escape(ext)}$")
+    backup_pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}_\d{{6}}(?:_pre_restore)?{re.escape(ext)}$")
     backups = []
     for b in config.BACKUP_DIR.glob(f"{prefix}_*{ext}"):
         if backup_pattern.match(b.name):
@@ -71,7 +71,7 @@ class BackupRoutesMixin:
                 backups = []
             else:
                 ext = file_path.suffix or '.md'
-                backup_pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}_\d{{6}}{re.escape(ext)}$")
+                backup_pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}_\d{{6}}(?:_pre_restore)?{re.escape(ext)}$")
                 backups = sorted(
                     [b for b in config.BACKUP_DIR.glob(f"{prefix}_*{ext}") if backup_pattern.match(b.name)],
                     reverse=True

@@ -28,6 +28,7 @@ LAST_SAVE_TIMES = {}
 LAST_SAVE_LOCK = threading.Lock()
 
 DEV_MODE = False
+BOOT_ID = secrets.token_hex(8)
 
 
 _LAST_SAVE_MAX_AGE = 3600.0
@@ -89,7 +90,12 @@ def init_config(home_dir=None):
         raise PermissionError("Path traversal detected")
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSION_TOKEN = secrets.token_hex(16)
-    atomic_write(TOKEN_FILE, SESSION_TOKEN)
+    atomic_write(TOKEN_FILE, SESSION_TOKEN, perms=0o600)
+    try:
+        os.chmod(TOKEN_FILE, 0o600)
+    except OSError:
+        pass
+
 
 
 def check_static_changed(last_state):

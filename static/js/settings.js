@@ -246,5 +246,6 @@ export async function initSettings() {
             await closeFile(false);
             api.loadDirectory(ctx, '');
         }
+        ui.cleanupOrphanDrafts(ctx);
     }
 }

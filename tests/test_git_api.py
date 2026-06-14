@@ -2,7 +2,6 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.environ["MODIE_TESTING"] = "1"
 import unittest
 from unittest.mock import patch
 import json
@@ -93,6 +92,54 @@ class TestGitAPI(unittest.TestCase):
         self.assertEqual(self.handler.response_status, 200)
         self.assertTrue(self.handler.response_data["ok"])
         mock_run_git.assert_called_with(repo_dir, ["add", "--", "file1.md"])
+
+    @patch("backend.routes_git.GitRoutesMixin._find_git_root")
+    @patch("backend.routes_git.GitRoutesMixin._run_git")
+    def test_git_status_non_ascii(self, mock_run_git, mock_find_git_root):
+        repo_dir = self.test_dir / "termux_home"
+        repo_dir.mkdir(exist_ok=True)
+        mock_find_git_root.return_value = repo_dir
+        
+        mock_run_git.side_effect = [
+            (0, "git version 2.40.0", ""),
+            (0, "main\n", ""),
+            (0, ' M "f\\303\\2511.md"\nM  "f\\303\\2512.md"\n?? "newf\\303\\251.txt"\n', "")
+        ]
+        
+        self.handler.path = "/api/git/status?path=termux_home"
+        self.handler.query_params = {"path": "termux_home"}
+        self.handler._api_git_status()
+        
+        self.assertEqual(self.handler.response_status, 200)
+        data = self.handler.response_data
+        self.assertEqual(data["staged"][0]["path"], "fé2.md")
+        self.assertEqual(data["unstaged"][0]["path"], "fé1.md")
+        self.assertEqual(data["untracked"][0], "newfé.txt")
+
+    @patch("backend.routes_git.GitRoutesMixin._find_git_root")
+    @patch("backend.routes_git.GitRoutesMixin._run_git")
+    def test_git_status_path_with_arrow(self, mock_run_git, mock_find_git_root):
+        repo_dir = self.test_dir / "termux_home"
+        repo_dir.mkdir(exist_ok=True)
+        mock_find_git_root.return_value = repo_dir
+        
+        mock_run_git.side_effect = [
+            (0, "git version 2.40.0", ""),
+            (0, "main\n", ""),
+            (0, ' M a -> b.md\nR  old.md -> new.md\n?? arrow -> file.txt\n', "")
+        ]
+        
+        self.handler.path = "/api/git/status?path=termux_home"
+        self.handler.query_params = {"path": "termux_home"}
+        self.handler._api_git_status()
+        
+        self.assertEqual(self.handler.response_status, 200)
+        data = self.handler.response_data
+        self.assertEqual(data["unstaged"][0]["path"], "a -> b.md")
+        self.assertEqual(data["staged"][0]["path"], "new.md")
+        self.assertEqual(data["staged"][0]["status"], "R")
+        self.assertEqual(data["untracked"][0], "arrow -> file.txt")
+
 
 if __name__ == "__main__":
     unittest.main()
